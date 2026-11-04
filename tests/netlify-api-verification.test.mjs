@@ -296,4 +296,74 @@ describe('Netlify Serverless Function (netlify/functions/api.mjs) Verification',
     const body = await res.json();
     assert.match(body.error, /permission|access denied/i);
   });
+
+  // 9. Scan Creation & Background Queue Verification
+  test('POST /api/tests without auth returns HTTP 401', async () => {
+    const res = await handler({
+      httpMethod: 'POST',
+      path: '/api/tests',
+      body: JSON.stringify({ url: 'https://example.com' })
+    });
+    assert.equal(res.statusCode, 401);
+  });
+
+  test('POST /api/tests with invalid/internal address returns HTTP 400', async () => {
+    const validOwnerToken = createSignedFirebaseToken({ uid: targetOwnerUid });
+    const res = await handler({
+      httpMethod: 'POST',
+      path: '/api/tests',
+      headers: { authorization: `Bearer ${validOwnerToken}` },
+      body: JSON.stringify({ url: 'http://localhost:3000' })
+    });
+    assert.equal(res.statusCode, 400);
+    const body = JSON.parse(res.body);
+    assert.match(body.error, /not publicly reachable|valid/i);
+  });
+
+  test('POST /api/tests with valid public URL returns HTTP 202 Accepted linked to owner', async () => {
+    const validOwnerToken = createSignedFirebaseToken({ uid: targetOwnerUid });
+    const res = await handler({
+      httpMethod: 'POST',
+      path: '/api/tests',
+      headers: { authorization: `Bearer ${validOwnerToken}` },
+      body: JSON.stringify({ url: 'https://example.com' })
+    });
+    assert.equal(res.statusCode, 202);
+    const job = JSON.parse(res.body);
+    assert.ok(job.id, 'Job must have a unique UUID');
+    assert.equal(job.owner, targetOwnerUid, 'Job must be linked to authenticated UID');
+    assert.equal(job.status, 'queued', 'Initial job status must be queued');
+    assert.equal(job.hostname, 'example.com');
+
+    // Verify GET /api/tests/:id retrieves the job for the owner
+    const getRes = await handler({
+      httpMethod: 'GET',
+      path: `/api/tests/${job.id}`,
+      headers: { authorization: `Bearer ${validOwnerToken}` }
+    });
+    assert.equal(getRes.statusCode, 200);
+    const fetchedJob = JSON.parse(getRes.body);
+    assert.equal(fetchedJob.id, job.id);
+    assert.equal(fetchedJob.url, 'https://example.com');
+  });
+
+  test('GET /api/tests/:id returns HTTP 403 Forbidden for another user on newly created job', async () => {
+    const ownerToken = createSignedFirebaseToken({ uid: 'job-creator-uid-123' });
+    const postRes = await handler({
+      httpMethod: 'POST',
+      path: '/api/tests',
+      headers: { authorization: `Bearer ${ownerToken}` },
+      body: JSON.stringify({ url: 'https://example.com' })
+    });
+    assert.equal(postRes.statusCode, 202);
+    const job = JSON.parse(postRes.body);
+
+    const otherUserToken = createSignedFirebaseToken({ uid: 'different-spy-uid-456' });
+    const getRes = await handler({
+      httpMethod: 'GET',
+      path: `/api/tests/${job.id}`,
+      headers: { authorization: `Bearer ${otherUserToken}` }
+    });
+    assert.equal(getRes.statusCode, 403);
+  });
 });

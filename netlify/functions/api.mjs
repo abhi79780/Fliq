@@ -2,6 +2,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import zlib from 'node:zlib';
+import {
+  getAllTests,
+  getTestById,
+  saveTestRecord,
+  getScreenshotBuffer,
+  getRecordOwnerId,
+  isUserAuthorizedForRecord
+} from './storage.mjs';
+import { validateTarget, runAuditScan } from './audit-engine.mjs';
 
 // In-memory cache for Google's public x509 certificates (rotated periodically by Google)
 let googleCertsCache = null;
@@ -59,127 +68,7 @@ function parseTestsPayload(raw) {
 }
 
 function getLocalTests() {
-  const now = Date.now();
-  if (cachedTests && (now - cachedTestsTimestamp < 30000)) {
-    return cachedTests;
-  }
-
-  // 1. Check environment variables if small seed data or test environment configured
-  if (process.env.FLIQ_SEED_TESTS_JSON) {
-    const parsed = parseTestsPayload(process.env.FLIQ_SEED_TESTS_JSON);
-    if (parsed && parsed.length > 0) {
-      cachedTests = parsed;
-      cachedTestsTimestamp = now;
-      return parsed;
-    }
-  }
-
-  if (process.env.FLIQ_SEED_TESTS_BASE64) {
-    try {
-      const buf = Buffer.from(process.env.FLIQ_SEED_TESTS_BASE64, 'base64');
-      const parsed = parseTestsPayload(buf);
-      if (parsed && parsed.length > 0) {
-        cachedTests = parsed;
-        cachedTestsTimestamp = now;
-        return parsed;
-      }
-    } catch (e) {
-      console.warn('[Netlify Function] Notice: Could not parse FLIQ_SEED_TESTS_BASE64:', e.message);
-    }
-  }
-
-  // 2. Candidate filesystem locations (safely resolving from task root or CWD without import.meta.url)
-  const base = process.env.LAMBDA_TASK_ROOT || process.cwd();
-  const candidatePaths = [
-    path.join(base, 'tests.json'),
-    path.join(base, 'netlify', 'functions', 'tests.json'),
-    path.join(base, 'data', 'tests.json'),
-    path.join(base, 'netlify', 'functions', 'data', 'tests.json'),
-    path.join(process.cwd(), 'tests.json'),
-    path.join(process.cwd(), 'netlify', 'functions', 'tests.json'),
-    path.join(process.cwd(), 'data', 'tests.json'),
-    path.join('/var/task', 'tests.json'),
-    path.join('/var/task', 'netlify', 'functions', 'tests.json'),
-    path.join('/var/task', 'data', 'tests.json')
-  ];
-
-  for (const p of candidatePaths) {
-    try {
-      if (fs.existsSync(p)) {
-        const raw = fs.readFileSync(p);
-        const parsed = parseTestsPayload(raw);
-        if (parsed && parsed.length > 0) {
-          cachedTests = parsed;
-          cachedTestsTimestamp = now;
-          return parsed;
-        }
-      }
-    } catch (e) {
-      console.warn('[Netlify Function] Notice reading tests.json at', p, e.message);
-    }
-  }
-
-  if (!hasLoggedMissingDataWarning) {
-    console.error('[Netlify Function Diagnostic Error] No test records found in function bundle or environment variables.');
-    console.error('[Netlify Function Diagnostic Error] In a clean Git checkout, configure FLIQ_TESTS_URL in Netlify site settings to download test reports during build.');
-    hasLoggedMissingDataWarning = true;
-  }
-
-  return cachedTests || [];
-}
-
-// Helper to locate screenshot files securely on disk
-function getScreenshotBuffer(filename) {
-  const safeName = path.basename(filename);
-
-  // Check private base64 environment variable if provided
-  const envKey = 'FLIQ_SCREENSHOT_' + safeName.replace(/[^a-zA-Z0-9]/g, '_');
-  if (process.env[envKey]) {
-    try {
-      return Buffer.from(process.env[envKey], 'base64');
-    } catch {}
-  }
-
-  const base = process.env.LAMBDA_TASK_ROOT || process.cwd();
-  const candidatePaths = [
-    path.join(base, 'netlify', 'functions', 'data', safeName),
-    path.join(base, 'data', safeName),
-    path.join(base, safeName),
-    path.join(process.cwd(), 'netlify', 'functions', 'data', safeName),
-    path.join(process.cwd(), 'data', safeName),
-    path.join('/var/task', 'netlify', 'functions', 'data', safeName),
-    path.join('/var/task', 'data', safeName)
-  ];
-
-  for (const p of candidatePaths) {
-    try {
-      if (fs.existsSync(p)) {
-        return fs.readFileSync(p);
-      }
-    } catch {}
-  }
-  return null;
-}
-
-// Extract canonical owner ID from test record
-function getRecordOwnerId(record) {
-  if (!record || typeof record !== 'object') return null;
-  const val = record.owner || record.userId || record.uid;
-  return typeof val === 'string' && val.trim() ? val.trim() : null;
-}
-
-// Strict ownership & authorization verification
-function isUserAuthorizedForRecord(record, userUid) {
-  if (!record || !userUid) return false;
-  const ownerId = getRecordOwnerId(record);
-  if (ownerId && ownerId === userUid) {
-    return true;
-  }
-  // Check shared access explicitly authorized in sharedWithUids array
-  if (Array.isArray(record.sharedWithUids) && record.sharedWithUids.includes(userUid)) {
-    return true;
-  }
-  return false;
+  return getAllTests();
 }
 
 // Cryptographic Firebase ID Token Verifier
@@ -430,6 +319,7 @@ async function processApiRequest({ method, pathname, headers, body }) {
     if (!authResult.ok) {
       return { status: authResult.status, headers: defaultHeaders, body: JSON.stringify({ error: authResult.error }) };
     }
+    const user = authResult.user;
 
     const backendUrl = process.env.FLIQ_BACKEND_URL?.trim();
     if (backendUrl) {
@@ -459,12 +349,73 @@ async function processApiRequest({ method, pathname, headers, body }) {
       }
     }
 
+    let bodyObj = {};
+    try {
+      bodyObj = body ? JSON.parse(body) : {};
+    } catch {
+      return { status: 400, headers: defaultHeaders, body: JSON.stringify({ error: 'Invalid JSON request body.' }) };
+    }
+
+    const rawUrl = bodyObj.url?.trim();
+    if (!rawUrl) {
+      return { status: 400, headers: defaultHeaders, body: JSON.stringify({ error: 'Please enter a website URL.' }) };
+    }
+
+    let validated;
+    try {
+      validated = await validateTarget(rawUrl);
+    } catch (valErr) {
+      return { status: 400, headers: defaultHeaders, body: JSON.stringify({ error: valErr.message }) };
+    }
+
+    // Check active scan concurrency limit
+    const allTests = getAllTests();
+    const activeScans = allTests.filter(t => t.owner === user.uid && (t.status === 'running' || t.status === 'queued'));
+    const maxActive = Number(process.env.FLIQ_MAX_ACTIVE_TESTS || 1);
+    if (activeScans.length >= maxActive) {
+      return {
+        status: 429,
+        headers: defaultHeaders,
+        body: JSON.stringify({ error: 'You already have an active test running. Please wait for it to complete.' })
+      };
+    }
+
+    // Create unique test job linked to authenticated UID
+    const testId = crypto.randomUUID();
+    const newJob = {
+      id: testId,
+      url: validated.url,
+      hostname: validated.hostname,
+      owner: user.uid,
+      sharedWithUids: [],
+      status: 'queued',
+      stage: 'Queued',
+      progress: 5,
+      createdAt: new Date().toISOString()
+    };
+
+    saveTestRecord(newJob);
+
+    // Trigger background execution:
+    // 1. Dispatch to Netlify Background Function if site URL is known
+    const siteUrl = process.env.URL || (headers?.host ? `https://${headers.host}` : '');
+    if (siteUrl && !siteUrl.includes('localhost')) {
+      fetch(`${siteUrl}/.netlify/functions/scan-background`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ testId: newJob.id, url: newJob.url, owner: user.uid })
+      }).catch(bgErr => console.warn('[api.mjs] Background dispatch notice:', bgErr.message));
+    }
+
+    // 2. Also run the audit engine asynchronously directly in the process
+    runAuditScan(newJob).catch(scanErr => {
+      console.error('[api.mjs] Asynchronous scan exception:', scanErr.message);
+    });
+
     return {
-      status: 503,
+      status: 202,
       headers: defaultHeaders,
-      body: JSON.stringify({
-        error: 'Playwright browser crawlers require a background crawler runtime with headless Chromium and cannot execute within serverless Netlify Functions (10-26s timeout). All existing reports and test history are fully available.'
-      })
+      body: JSON.stringify(newJob)
     };
   }
 
@@ -477,10 +428,10 @@ async function processApiRequest({ method, pathname, headers, body }) {
     }
     const user = authResult.user;
     const testId = singleTestMatch[1];
-    const allTests = getLocalTests();
-    const test = allTests.find(t => t.id === testId);
+    const test = getTestById(testId) || getAllTests().find(t => t.id === testId);
 
     if (!test) {
+      const allTests = getAllTests();
       if (allTests.length === 0) {
         console.error(`[Netlify Function Diagnostic Error] Test ${testId} not found: serverless database is unseeded (0 records loaded).`);
         return {

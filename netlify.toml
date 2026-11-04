@@ -26,6 +26,12 @@
 
 # Serverless API routes (Netlify Functions)
 [[redirects]]
+  from = "/api/scan-background"
+  to = "/.netlify/functions/scan-background"
+  status = 202
+  force = true
+
+[[redirects]]
   from = "/api/*"
   to = "/.netlify/functions/api"
   status = 200
