@@ -1,0 +1,27 @@
+{
+  "name": "fliq-website",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "test": "node --test",
+    "test:a11y": "node tests/a11y-regression.test.mjs",
+    "test:logo": "node tests/logo-navigation.test.mjs",
+    "test:ai": "node tests/ai-resilience.test.mjs",
+    "test:live": "node tests/live-inspection.test.mjs",
+    "test:consistency": "node tests/report-consistency.test.mjs",
+    "test:pricing": "node tests/pricing.test.mjs",
+    "test:pricing-auth": "node tests/pricing-auth.test.mjs",
+    "test:e2e": "node --test tests/e2e.test.js",
+    "test:scan-ui": "node tests/run-ui-scan.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "firebase-admin": "^14.5.0",
+    "playwright": "^1.55.0"
+  }
+}

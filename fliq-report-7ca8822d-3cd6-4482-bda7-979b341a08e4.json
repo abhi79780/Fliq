@@ -1,0 +1,25 @@
+{
+  "id": "7ca8822d-3cd6-4482-bda7-979b341a08e4",
+  "url": "https://example.com/",
+  "hostname": "example.com",
+  "status": "completed",
+  "progress": 100,
+  "stage": "Complete",
+  "createdAt": "2026-10-28T07:36:09.133Z",
+  "owner": "local",
+  "completedAt": "2026-10-28T07:36:10.526Z",
+  "finalUrl": "https://example.com/",
+  "title": "Example Domain",
+  "httpStatus": 200,
+  "loadTime": 832,
+  "issues": [],
+  "score": 100,
+  "brokenLinks": 0,
+  "missingImages": 0,
+  "accessibilityCount": 0,
+  "aiSummary": "AI analysis is not configured. Add GROQ_API_KEY to enable explanations.",
+  "screenshots": [
+    "7ca8822d-3cd6-4482-bda7-979b341a08e4-desktop.png",
+    "7ca8822d-3cd6-4482-bda7-979b341a08e4-mobile.png"
+  ]
+}

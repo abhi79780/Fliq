@@ -1,0 +1,8 @@
+node_modules/
+.env
+*.service-account.json
+*serviceAccount*.json
+*firebase-adminsdk*.json
+data/
+playwright-report/
+test-results/
