@@ -15,7 +15,12 @@ const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 // Load .env the same way server.js does
 try { process.loadEnvFile(path.join(root, '.env')); } catch (e) { if (e.code !== 'ENOENT') throw e; }
 
-const EXPECTED_PROJECT = process.env.FIREBASE_PROJECT_ID?.trim() || 'fliq-61989';
+const EXPECTED_PROJECT = process.env.FIREBASE_PROJECT_ID?.trim();
+if (!EXPECTED_PROJECT) {
+  console.error('\n[!] Configuration Error: FIREBASE_PROJECT_ID environment variable is missing.');
+  console.error('Please configure FIREBASE_PROJECT_ID in your environment or .env file before running diagnostics.\n');
+  process.exit(1);
+}
 const sep = '─'.repeat(60);
 
 console.log(sep);
@@ -46,14 +51,7 @@ for (const key of envChecks) {
 
 // ── 2. Project-ID check ─────────────────────────────────────────────────────
 console.log('\n[2] Project ID check');
-const configuredProject = process.env.FIREBASE_PROJECT_ID?.trim();
-if (!configuredProject) {
-  console.log('  ✗  FIREBASE_PROJECT_ID is not set – add it to .env');
-} else if (configuredProject !== EXPECTED_PROJECT) {
-  console.log(`  ✗  FIREBASE_PROJECT_ID is "${configuredProject}" but must be "${EXPECTED_PROJECT}"`);
-} else {
-  console.log(`  ✓  FIREBASE_PROJECT_ID = ${configuredProject}`);
-}
+console.log(`  ✓  FIREBASE_PROJECT_ID = ${EXPECTED_PROJECT}`);
 
 // ── 3. Which credential path will server.js use? ────────────────────────────
 console.log('\n[3] Credential path selection (same logic as server.js)');
@@ -167,7 +165,7 @@ try {
     if (authErr.code === 'auth/insufficient-permission' || authErr.errorInfo?.code === 'auth/insufficient-permission') {
       console.log('  ⚠  Access token obtained but Firebase Auth responded with permission error.');
       console.log('     The account may lack the Firebase Admin SDK Service Agent role.');
-      console.log('     Grant it at: https://console.cloud.google.com/iam-admin/iam?project=fliq-61989');
+      console.log(`     Grant it at: https://console.cloud.google.com/iam-admin/iam?project=${EXPECTED_PROJECT}`);
     } else {
       console.log(`  ✓  Firebase Auth API responded (${authErr.code || authErr.message}) – credential is working`);
     }
@@ -181,15 +179,15 @@ try {
     console.log('  Application Default Credentials are not configured.');
     console.log('  Run the following command (requires Google Cloud CLI):');
     console.log();
-    console.log('    gcloud auth application-default login --project=fliq-61989');
+    console.log(`    gcloud auth application-default login --project=${EXPECTED_PROJECT}`);
     console.log();
     console.log('  If gcloud is not installed, download it from:');
     console.log('    https://cloud.google.com/sdk/docs/install');
     console.log();
     console.log('  Alternatively, download a service-account key from Firebase Console:');
-    console.log('    https://console.firebase.google.com/project/fliq-61989/settings/serviceaccounts/adminsdk');
+    console.log(`    https://console.firebase.google.com/project/${EXPECTED_PROJECT}/settings/serviceaccounts/adminsdk`);
     console.log('  Save it outside the public/ folder and add to .env:');
-    console.log('    GOOGLE_APPLICATION_CREDENTIALS=./fliq-61989-firebase-adminsdk.json');
+    console.log(`    GOOGLE_APPLICATION_CREDENTIALS=./${EXPECTED_PROJECT}-firebase-adminsdk.json`);
     console.log('  ────────────────────────────────────────────────────────────');
   }
 }

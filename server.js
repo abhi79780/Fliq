@@ -53,67 +53,71 @@ await fs.mkdir(dataDir, { recursive: true });
 const dbFile = path.join(dataDir, 'tests.json');
 let adminApp=null;
 let adminInitError=null;
-const expectedProjectId = process.env.FIREBASE_PROJECT_ID?.trim() || 'fliq-61989';
-try {
-  const configuredProjectId=process.env.FIREBASE_PROJECT_ID?.trim();
+const expectedProjectId = process.env.FIREBASE_PROJECT_ID?.trim();
+if (!expectedProjectId) {
+  adminInitError = 'FIREBASE_PROJECT_ID environment variable is missing. Configure FIREBASE_PROJECT_ID in your environment variables or .env file.';
+  console.error('[Firebase Admin] Configuration Error:', adminInitError);
+  console.error('[Firebase Admin] Scanning and report access will be unavailable until credentials are configured.');
+} else {
+  try {
+    let serviceAccount=null;
+    let useADC=false;
 
-  let serviceAccount=null;
-  let useADC=false;
-
-  if(process.env.FIREBASE_SERVICE_ACCOUNT_JSON){
-    // Option 1: Inline JSON in environment variable
-    serviceAccount=JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
-  } else if(process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim()) {
-    // Option 2: Path to a service account key file OR an ADC file
-    const credentialPath=path.resolve(root,process.env.GOOGLE_APPLICATION_CREDENTIALS.trim());
-    const publicRoots=[path.resolve(root,'public'),path.resolve(root,'static')];
-    if(publicRoots.some(publicRoot=>credentialPath===publicRoot||credentialPath.startsWith(publicRoot+path.sep))) {
-      throw new Error('Credential files must be kept outside public/static directories.');
-    }
-    const raw=JSON.parse(await fs.readFile(credentialPath,'utf8'));
-    // service_account JSON → use cert(); authorized_user / external_account → let ADC handle it
-    if(raw.type==='service_account') {
-      serviceAccount=raw;
+    if(process.env.FIREBASE_SERVICE_ACCOUNT_JSON){
+      // Option 1: Inline JSON in environment variable
+      serviceAccount=JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+    } else if(process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim()) {
+      // Option 2: Path to a service account key file OR an ADC file
+      const credentialPath=path.resolve(root,process.env.GOOGLE_APPLICATION_CREDENTIALS.trim());
+      const publicRoots=[path.resolve(root,'public'),path.resolve(root,'static')];
+      if(publicRoots.some(publicRoot=>credentialPath===publicRoot||credentialPath.startsWith(publicRoot+path.sep))) {
+        throw new Error('Credential files must be kept outside public/static directories.');
+      }
+      const raw=JSON.parse(await fs.readFile(credentialPath,'utf8'));
+      // service_account JSON → use cert(); authorized_user / external_account → let ADC handle it
+      if(raw.type==='service_account') {
+        serviceAccount=raw;
+      } else {
+        // ADC-compatible file (authorized_user from `gcloud auth application-default login`)
+        useADC=true;
+      }
     } else {
-      // ADC-compatible file (authorized_user from `gcloud auth application-default login`)
+      // Option 3: No explicit credential configured – attempt Application Default Credentials.
+      // This works when `gcloud auth application-default login` has been run, or when the
+      // process is running on GCP (Compute Engine, Cloud Run, etc.) with an attached service account.
       useADC=true;
     }
-  } else {
-    // Option 3: No explicit credential configured – attempt Application Default Credentials.
-    // This works when `gcloud auth application-default login` has been run, or when the
-    // process is running on GCP (Compute Engine, Cloud Run, etc.) with an attached service account.
-    useADC=true;
-  }
 
-  if(serviceAccount){
-    if(serviceAccount.type!=='service_account'||!serviceAccount.project_id||!serviceAccount.client_email||!serviceAccount.private_key) throw new Error('Credential file is not a complete service-account credential.');
-    if(serviceAccount.project_id!==expectedProjectId||(configuredProjectId&&configuredProjectId!==expectedProjectId)) throw new Error(`Service-account project ID (${serviceAccount.project_id}) does not match expected project ID (${expectedProjectId}).`);
-    const existing=getApps().find(app=>app.name==='fliq-admin');
-    if(existing&&existing.options.projectId!==expectedProjectId) throw new Error('Existing Firebase Admin app targets a different project.');
-    adminApp=existing||initializeApp({projectId:expectedProjectId,credential:cert(serviceAccount)},'fliq-admin');
-    console.log('Firebase Admin: initialized with service-account credential for project',expectedProjectId);
-  } else if(useADC) {
-    // Application Default Credentials – projectId must be explicit because ADC files do not embed it.
-    const existing=getApps().find(app=>app.name==='fliq-admin');
-    if(existing&&existing.options.projectId!==expectedProjectId) throw new Error('Existing Firebase Admin app targets a different project.');
-    adminApp=existing||initializeApp({projectId:expectedProjectId,credential:applicationDefault()},'fliq-admin');
-    // Eagerly verify the credential is usable by fetching a short-lived token.
-    // This surfaces misconfigured ADC at startup rather than on the first scan request.
-    try {
-      await adminApp.options.credential.getAccessToken();
-      console.log('Firebase Admin: initialized with Application Default Credentials for project',expectedProjectId);
-    } catch(adcErr) {
-      // ADC is present but not authorised – destroy the app so the server degrades gracefully.
-      adminApp=null;
-      const hint=`Run: gcloud auth application-default login --project=${expectedProjectId}\nThen ensure the account has the Firebase Admin SDK Service Agent role (or Owner) on the project.`;
-      adminInitError=`Firebase Admin ADC failed: ${adcErr.message}\n${hint}`;
-      throw new Error(adminInitError);
+    if(serviceAccount){
+      if(serviceAccount.type!=='service_account'||!serviceAccount.project_id||!serviceAccount.client_email||!serviceAccount.private_key) throw new Error('Credential file is not a complete service-account credential.');
+      if(serviceAccount.project_id!==expectedProjectId) throw new Error(`Service-account project ID (${serviceAccount.project_id}) does not match expected project ID (${expectedProjectId}).`);
+      const existing=getApps().find(app=>app.name==='fliq-admin');
+      if(existing&&existing.options.projectId!==expectedProjectId) throw new Error('Existing Firebase Admin app targets a different project.');
+      adminApp=existing||initializeApp({projectId:expectedProjectId,credential:cert(serviceAccount)},'fliq-admin');
+      console.log('Firebase Admin: initialized with service-account credential for project',expectedProjectId);
+    } else if(useADC) {
+      // Application Default Credentials – projectId must be explicit because ADC files do not embed it.
+      const existing=getApps().find(app=>app.name==='fliq-admin');
+      if(existing&&existing.options.projectId!==expectedProjectId) throw new Error('Existing Firebase Admin app targets a different project.');
+      adminApp=existing||initializeApp({projectId:expectedProjectId,credential:applicationDefault()},'fliq-admin');
+      // Eagerly verify the credential is usable by fetching a short-lived token.
+      // This surfaces misconfigured ADC at startup rather than on the first scan request.
+      try {
+        await adminApp.options.credential.getAccessToken();
+        console.log('Firebase Admin: initialized with Application Default Credentials for project',expectedProjectId);
+      } catch(adcErr) {
+        // ADC is present but not authorised – destroy the app so the server degrades gracefully.
+        adminApp=null;
+        const hint=`Run: gcloud auth application-default login --project=${expectedProjectId}\nThen ensure the account has the Firebase Admin SDK Service Agent role (or Owner) on the project.`;
+        adminInitError=`Firebase Admin ADC failed: ${adcErr.message}\n${hint}`;
+        throw new Error(adminInitError);
+      }
     }
+  } catch(e) {
+    const msg=adminInitError||e.message||String(e);
+    console.error('[Firebase Admin] Initialization failed:', msg);
+    console.error('[Firebase Admin] Scanning and report access will be unavailable until credentials are configured.');
   }
-} catch(e) {
-  const msg=adminInitError||e.message||String(e);
-  console.error('[Firebase Admin] Initialization failed:', msg);
-  console.error('[Firebase Admin] Scanning and report access will be unavailable until credentials are configured.');
 }
 const cloud = () => adminApp ? getFirestore(adminApp) : null;
 const firebaseWebFieldNames={apiKey:'FIREBASE_WEB_API_KEY',authDomain:'FIREBASE_AUTH_DOMAIN',projectId:'FIREBASE_PROJECT_ID',messagingSenderId:'FIREBASE_MESSAGING_SENDER_ID',appId:'FIREBASE_APP_ID'};
@@ -132,7 +136,10 @@ async function verifiedUser(req, options = {}) {
 
   const token = req.headers.authorization?.match(/^Bearer (.+)$/i)?.[1];
   if (!adminApp) {
-    if (token) throw Object.assign(new Error('Firebase Admin credentials are not configured. Run: gcloud auth application-default login --project=fliq-61989  then restart the server, or add a service-account key to .env as GOOGLE_APPLICATION_CREDENTIALS=path/to/key.json'), { status: 503 });
+    if (token) {
+      const projFlag = expectedProjectId ? ` --project=${expectedProjectId}` : '';
+      throw Object.assign(new Error(`Firebase Admin credentials are not configured. Run: gcloud auth application-default login${projFlag} then restart the server, or add a service-account key to .env as GOOGLE_APPLICATION_CREDENTIALS=path/to/key.json`), { status: 503 });
+    }
     return { uid: 'local', isAnonymous: false };
   }
   if (!token) {
@@ -990,7 +997,7 @@ const server=http.createServer(async(req,res)=>{
   const pathname=new URL(req.url,'http://localhost').pathname;
   if(pathname.startsWith('/api/')){
     if(pathname==='/api/firebase-config'&&req.method==='GET'){const missing=getMissingFirebaseWebFields();return send(res,200,{configured:missing.length===0,missing,config:missing.length===0?getFirebaseWebConfig():null});}
-    if(pathname==='/api/health'){const firebaseWebMissing=getMissingFirebaseWebFields(),firebaseAdminConfigured=Boolean(adminApp);const credentialType=adminApp?(process.env.FIREBASE_SERVICE_ACCOUNT_JSON?'service-account-env':process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim()?'service-account-file':'application-default-credentials'):'none';return send(res,200,{ok:true,playwrightConfigured:playwrightAvailable,firebaseConfigured:Boolean(firebaseAdminConfigured&&firebaseWebMissing.length===0),firebaseWebConfigured:firebaseWebMissing.length===0,firebaseWebMissing,firebaseAdminConfigured,credentialType,firebaseMissing:[...firebaseWebMissing,...(firebaseAdminConfigured?[]:[`Valid ${expectedProjectId} server credential (Firebase Admin) — run: gcloud auth application-default login --project=${expectedProjectId}`])],authMode:firebaseAdminConfigured?'firebase':'local-preview'});}
+    if(pathname==='/api/health'){const firebaseWebMissing=getMissingFirebaseWebFields(),firebaseAdminConfigured=Boolean(adminApp);const credentialType=adminApp?(process.env.FIREBASE_SERVICE_ACCOUNT_JSON?'service-account-env':process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim()?'service-account-file':'application-default-credentials'):'none';return send(res,200,{ok:true,playwrightConfigured:playwrightAvailable,firebaseConfigured:Boolean(firebaseAdminConfigured&&firebaseWebMissing.length===0),firebaseWebConfigured:firebaseWebMissing.length===0,firebaseWebMissing,firebaseAdminConfigured,credentialType,firebaseMissing:[...firebaseWebMissing,...(firebaseAdminConfigured?[]:[expectedProjectId?`Valid ${expectedProjectId} server credential (Firebase Admin) — run: gcloud auth application-default login --project=${expectedProjectId}`:'Valid Firebase Admin server credential required — set FIREBASE_PROJECT_ID and run: gcloud auth application-default login'])],authMode:firebaseAdminConfigured?'firebase':'local-preview'});}
     if(pathname==='/api/regression-tests'){
       if(req.method==='POST'){
         try {
