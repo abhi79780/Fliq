@@ -15,7 +15,7 @@ const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 // Load .env the same way server.js does
 try { process.loadEnvFile(path.join(root, '.env')); } catch (e) { if (e.code !== 'ENOENT') throw e; }
 
-const EXPECTED_PROJECT = 'fliq-61989';
+const EXPECTED_PROJECT = process.env.FIREBASE_PROJECT_ID?.trim() || 'fliq-61989';
 const sep = '─'.repeat(60);
 
 console.log(sep);

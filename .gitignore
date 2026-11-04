@@ -1,8 +1,24 @@
 node_modules/
 .env
+.env.local
+.env.*.local
 *.service-account.json
 *serviceAccount*.json
 *firebase-adminsdk*.json
 data/
 playwright-report/
 test-results/
+
+# Temporary logs and debug files
+debug.log
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Netlify local cache and plugin artifacts
+.netlify/
+
+# Firebase CLI project cache
+.firebase/
+.firebaserc

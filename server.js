@@ -53,10 +53,9 @@ await fs.mkdir(dataDir, { recursive: true });
 const dbFile = path.join(dataDir, 'tests.json');
 let adminApp=null;
 let adminInitError=null;
+const expectedProjectId = process.env.FIREBASE_PROJECT_ID?.trim() || 'fliq-61989';
 try {
-  const expectedProjectId='fliq-61989';
   const configuredProjectId=process.env.FIREBASE_PROJECT_ID?.trim();
-  if(configuredProjectId && configuredProjectId!==expectedProjectId) throw new Error('Firebase project ID does not match the required project.');
 
   let serviceAccount=null;
   let useADC=false;
@@ -88,7 +87,7 @@ try {
 
   if(serviceAccount){
     if(serviceAccount.type!=='service_account'||!serviceAccount.project_id||!serviceAccount.client_email||!serviceAccount.private_key) throw new Error('Credential file is not a complete service-account credential.');
-    if(serviceAccount.project_id!==expectedProjectId||configuredProjectId!==expectedProjectId) throw new Error('Service-account and application project IDs must match fliq-61989.');
+    if(serviceAccount.project_id!==expectedProjectId||(configuredProjectId&&configuredProjectId!==expectedProjectId)) throw new Error(`Service-account project ID (${serviceAccount.project_id}) does not match expected project ID (${expectedProjectId}).`);
     const existing=getApps().find(app=>app.name==='fliq-admin');
     if(existing&&existing.options.projectId!==expectedProjectId) throw new Error('Existing Firebase Admin app targets a different project.');
     adminApp=existing||initializeApp({projectId:expectedProjectId,credential:cert(serviceAccount)},'fliq-admin');
@@ -106,7 +105,7 @@ try {
     } catch(adcErr) {
       // ADC is present but not authorised – destroy the app so the server degrades gracefully.
       adminApp=null;
-      const hint='Run: gcloud auth application-default login --project=fliq-61989\nThen ensure the account has the Firebase Admin SDK Service Agent role (or Owner) on the project.';
+      const hint=`Run: gcloud auth application-default login --project=${expectedProjectId}\nThen ensure the account has the Firebase Admin SDK Service Agent role (or Owner) on the project.`;
       adminInitError=`Firebase Admin ADC failed: ${adcErr.message}\n${hint}`;
       throw new Error(adminInitError);
     }
@@ -119,7 +118,7 @@ try {
 const cloud = () => adminApp ? getFirestore(adminApp) : null;
 const firebaseWebFieldNames={apiKey:'FIREBASE_WEB_API_KEY',authDomain:'FIREBASE_AUTH_DOMAIN',projectId:'FIREBASE_PROJECT_ID',messagingSenderId:'FIREBASE_MESSAGING_SENDER_ID',appId:'FIREBASE_APP_ID'};
 const getFirebaseWebConfig=()=>Object.fromEntries(Object.entries(firebaseWebFieldNames).map(([field,envName])=>[field,process.env[envName]||'']));
-const getMissingFirebaseWebFields=()=>[...Object.entries(firebaseWebFieldNames).filter(([,envName])=>!process.env[envName]?.trim()).map(([,envName])=>envName),...(process.env.FIREBASE_PROJECT_ID?.trim()&&process.env.FIREBASE_PROJECT_ID.trim()!=='fliq-61989'?['FIREBASE_PROJECT_ID must be fliq-61989']:[])];
+const getMissingFirebaseWebFields=()=>Object.entries(firebaseWebFieldNames).filter(([,envName])=>!process.env[envName]?.trim()).map(([,envName])=>envName);
 async function verifiedUser(req, options = {}) {
   // Support loopback test suite headers for multi-tenant verification
   const remoteIp = req.socket.remoteAddress;
@@ -991,7 +990,7 @@ const server=http.createServer(async(req,res)=>{
   const pathname=new URL(req.url,'http://localhost').pathname;
   if(pathname.startsWith('/api/')){
     if(pathname==='/api/firebase-config'&&req.method==='GET'){const missing=getMissingFirebaseWebFields();return send(res,200,{configured:missing.length===0,missing,config:missing.length===0?getFirebaseWebConfig():null});}
-    if(pathname==='/api/health'){const firebaseWebMissing=getMissingFirebaseWebFields(),firebaseAdminConfigured=Boolean(adminApp);const credentialType=adminApp?(process.env.FIREBASE_SERVICE_ACCOUNT_JSON?'service-account-env':process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim()?'service-account-file':'application-default-credentials'):'none';return send(res,200,{ok:true,playwrightConfigured:playwrightAvailable,firebaseConfigured:Boolean(firebaseAdminConfigured&&firebaseWebMissing.length===0),firebaseWebConfigured:firebaseWebMissing.length===0,firebaseWebMissing,firebaseAdminConfigured,credentialType,firebaseMissing:[...firebaseWebMissing,...(firebaseAdminConfigured?[]:['Valid fliq-61989 server credential (Firebase Admin) — run: gcloud auth application-default login --project=fliq-61989'])],authMode:firebaseAdminConfigured?'firebase':'local-preview'});}
+    if(pathname==='/api/health'){const firebaseWebMissing=getMissingFirebaseWebFields(),firebaseAdminConfigured=Boolean(adminApp);const credentialType=adminApp?(process.env.FIREBASE_SERVICE_ACCOUNT_JSON?'service-account-env':process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim()?'service-account-file':'application-default-credentials'):'none';return send(res,200,{ok:true,playwrightConfigured:playwrightAvailable,firebaseConfigured:Boolean(firebaseAdminConfigured&&firebaseWebMissing.length===0),firebaseWebConfigured:firebaseWebMissing.length===0,firebaseWebMissing,firebaseAdminConfigured,credentialType,firebaseMissing:[...firebaseWebMissing,...(firebaseAdminConfigured?[]:[`Valid ${expectedProjectId} server credential (Firebase Admin) — run: gcloud auth application-default login --project=${expectedProjectId}`])],authMode:firebaseAdminConfigured?'firebase':'local-preview'});}
     if(pathname==='/api/regression-tests'){
       if(req.method==='POST'){
         try {

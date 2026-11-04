@@ -1,0 +1,33 @@
+# ==============================================================================
+# FLIQ — Netlify Deployment Configuration
+# ==============================================================================
+# ARCHITECTURE NOTE:
+# FLIQ requires persistent Node.js runtime with headless Playwright Chromium,
+# multi-viewport screenshot captures, Server-Sent Events (SSE), and filesystem
+# access. Standard serverless functions (like Netlify Functions) have strict
+# execution timeouts (10-26s) and bundle limits (250MB) that cannot support
+# 90-second Playwright browser audit crawls.
+#
+# RECOMMENDED PRODUCTION TOPOLOGY:
+# 1. Frontend on Netlify: Serves static assets (index.html, app.js, styles.css, public/).
+# 2. Persistent Backend: Host server.js on Google Cloud Run, Railway, or Render with full
+#    Chromium support, Firebase Admin ADC/credentials, and persistent Firestore/storage.
+# 3. Netlify Reverse Proxy: Proxies /api/* to the persistent backend URL.
+# ==============================================================================
+
+[build]
+  publish = "."
+
+# Client-side SPA routing (Direct all non-asset page routes to index.html)
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+# HTTP Security headers for served assets
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    X-Frame-Options = "SAMEORIGIN"
+    Referrer-Policy = "strict-origin-when-cross-origin"
