@@ -5,7 +5,10 @@ node_modules/
 *.service-account.json
 *serviceAccount*.json
 *firebase-adminsdk*.json
+# Private local user scan history, tests database, and website screenshots
 data/
+netlify/functions/tests.json
+netlify/functions/data/
 playwright-report/
 test-results/
 

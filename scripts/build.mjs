@@ -130,6 +130,25 @@ if (fs.existsSync(functionsDir)) {
     } catch (e) {
       console.warn('[FLIQ Build] Notice copying tests.json:', e.message);
     }
+  } else if (process.env.FLIQ_TESTS_URL) {
+    try {
+      console.log('[FLIQ Build] Fetching test seed data from secure FLIQ_TESTS_URL...');
+      const res = await fetch(process.env.FLIQ_TESTS_URL);
+      if (res.ok) {
+        const text = await res.text();
+        fs.writeFileSync(localTestsDest, text, 'utf8');
+        console.log('[FLIQ Build] Successfully downloaded and packaged tests.json from secure URL.');
+      }
+    } catch (e) {
+      console.warn('[FLIQ Build] Notice fetching FLIQ_TESTS_URL:', e.message);
+    }
+  } else if (process.env.FLIQ_SEED_TESTS_JSON) {
+    try {
+      fs.writeFileSync(localTestsDest, process.env.FLIQ_SEED_TESTS_JSON, 'utf8');
+      console.log('[FLIQ Build] Wrote tests.json from FLIQ_SEED_TESTS_JSON environment variable.');
+    } catch (e) {
+      console.warn('[FLIQ Build] Notice writing seeded tests.json:', e.message);
+    }
   }
 
   const funcDataDir = path.join(functionsDir, 'data');

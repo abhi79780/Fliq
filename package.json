@@ -16,7 +16,8 @@
     "test:pricing": "node tests/pricing.test.mjs",
     "test:pricing-auth": "node tests/pricing-auth.test.mjs",
     "test:e2e": "node --test tests/e2e.test.js",
-    "test:scan-ui": "node tests/run-ui-scan.mjs"
+    "test:scan-ui": "node tests/run-ui-scan.mjs",
+    "test:netlify": "node tests/netlify-api-verification.test.mjs"
   },
   "engines": {
     "node": ">=20"
