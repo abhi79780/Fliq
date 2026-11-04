@@ -120,9 +120,26 @@ if (!expectedProjectId) {
   }
 }
 const cloud = () => adminApp ? getFirestore(adminApp) : null;
-const firebaseWebFieldNames={apiKey:'FIREBASE_WEB_API_KEY',authDomain:'FIREBASE_AUTH_DOMAIN',projectId:'FIREBASE_PROJECT_ID',messagingSenderId:'FIREBASE_MESSAGING_SENDER_ID',appId:'FIREBASE_APP_ID'};
-const getFirebaseWebConfig=()=>Object.fromEntries(Object.entries(firebaseWebFieldNames).map(([field,envName])=>[field,process.env[envName]||'']));
-const getMissingFirebaseWebFields=()=>Object.entries(firebaseWebFieldNames).filter(([,envName])=>!process.env[envName]?.trim()).map(([,envName])=>envName);
+const getWebApiKey = () => process.env.FIREBASE_WEB_API_KEY?.trim() || process.env.FIREBASE_API_KEY?.trim() || '';
+const getFirebaseWebConfig = () => {
+  const projectId = process.env.FIREBASE_PROJECT_ID?.trim() || '';
+  return {
+    apiKey: getWebApiKey(),
+    authDomain: process.env.FIREBASE_AUTH_DOMAIN?.trim() || (projectId ? `${projectId}.firebaseapp.com` : ''),
+    projectId,
+    messagingSenderId: process.env.FIREBASE_MESSAGING_SENDER_ID?.trim() || '',
+    appId: process.env.FIREBASE_APP_ID?.trim() || ''
+  };
+};
+const getMissingFirebaseWebFields = () => {
+  const missing = [];
+  if (!getWebApiKey()) missing.push('FIREBASE_WEB_API_KEY (or FIREBASE_API_KEY)');
+  if (!process.env.FIREBASE_AUTH_DOMAIN?.trim() && !process.env.FIREBASE_PROJECT_ID?.trim()) missing.push('FIREBASE_AUTH_DOMAIN');
+  if (!process.env.FIREBASE_PROJECT_ID?.trim()) missing.push('FIREBASE_PROJECT_ID');
+  if (!process.env.FIREBASE_MESSAGING_SENDER_ID?.trim()) missing.push('FIREBASE_MESSAGING_SENDER_ID');
+  if (!process.env.FIREBASE_APP_ID?.trim()) missing.push('FIREBASE_APP_ID');
+  return missing;
+};
 async function verifiedUser(req, options = {}) {
   // Support loopback test suite headers for multi-tenant verification
   const remoteIp = req.socket.remoteAddress;
@@ -995,6 +1012,14 @@ async function executeTest(job) {
 const server=http.createServer(async(req,res)=>{
   const origin=req.headers.origin; if(origin)res.setHeader('access-control-allow-origin',origin); res.setHeader('vary','Origin'); res.setHeader('access-control-allow-headers','content-type,authorization'); res.setHeader('access-control-allow-methods','GET,POST,OPTIONS'); if(req.method==='OPTIONS'){res.writeHead(204);return res.end();}
   const pathname=new URL(req.url,'http://localhost').pathname;
+  if(pathname==='/firebase-config.js'&&req.method==='GET'){
+    const cfg = getFirebaseWebConfig();
+    res.writeHead(200, { 'content-type': 'application/javascript; charset=utf-8', 'cache-control': 'no-cache' });
+    return res.end(`window.__FLIQ_FIREBASE_CONFIG__ = ${JSON.stringify(cfg, null, 2)};\n`);
+  }
+  if(pathname==='/firebase-config.json'&&req.method==='GET'){
+    return send(res, 200, getFirebaseWebConfig());
+  }
   if(pathname.startsWith('/api/')){
     if(pathname==='/api/firebase-config'&&req.method==='GET'){const missing=getMissingFirebaseWebFields();return send(res,200,{configured:missing.length===0,missing,config:missing.length===0?getFirebaseWebConfig():null});}
     if(pathname==='/api/health'){const firebaseWebMissing=getMissingFirebaseWebFields(),firebaseAdminConfigured=Boolean(adminApp);const credentialType=adminApp?(process.env.FIREBASE_SERVICE_ACCOUNT_JSON?'service-account-env':process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim()?'service-account-file':'application-default-credentials'):'none';return send(res,200,{ok:true,playwrightConfigured:playwrightAvailable,firebaseConfigured:Boolean(firebaseAdminConfigured&&firebaseWebMissing.length===0),firebaseWebConfigured:firebaseWebMissing.length===0,firebaseWebMissing,firebaseAdminConfigured,credentialType,firebaseMissing:[...firebaseWebMissing,...(firebaseAdminConfigured?[]:[expectedProjectId?`Valid ${expectedProjectId} server credential (Firebase Admin) — run: gcloud auth application-default login --project=${expectedProjectId}`:'Valid Firebase Admin server credential required — set FIREBASE_PROJECT_ID and run: gcloud auth application-default login'])],authMode:firebaseAdminConfigured?'firebase':'local-preview'});}

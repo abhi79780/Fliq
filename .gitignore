@@ -22,3 +22,8 @@ yarn-error.log*
 # Firebase CLI project cache
 .firebase/
 .firebaserc
+
+# Auto-generated client build configs
+firebase-config.js
+firebase-config.json
+

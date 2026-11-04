@@ -16,6 +16,7 @@
 # ==============================================================================
 
 [build]
+  command = "npm run build"
   publish = "."
 
 # Client-side SPA routing (Direct all non-asset page routes to index.html)

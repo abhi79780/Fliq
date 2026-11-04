@@ -6,15 +6,65 @@ let authStateResolved=false, resolvedAuthUser=null, authStateSubscribers=[];
 window.__fliqSignOutCalls=0;
 function notifyAuthSubscribers(user){while(authStateSubscribers.length){const fn=authStateSubscribers.shift();try{fn(user);}catch(e){console.error('[FLIQ] Auth subscriber error:',e);}}}
 try{for(const key of ['fliqToken','fliqRefresh'])localStorage.removeItem(key);}catch{}
-firebaseStatusPromise=fetch('/api/health').then(r=>r.json()).then(async j=>{
-  if(!j)return null;
-  firebaseConfigured=Boolean(j.firebaseConfigured);
-  firebaseWebConfigured=Boolean(j.firebaseWebConfigured);
-  firebaseAdminConfigured=Boolean(j.firebaseAdminConfigured);
-  firebaseWebMissing=j.firebaseWebMissing||[];
-  if(firebaseWebConfigured){
-    initializeFirebaseClient().catch(e=>console.warn('[FLIQ] Background init notice:',e.message));
+async function getClientFirebaseConfig() {
+  if (typeof window !== 'undefined' && window.__FLIQ_FIREBASE_CONFIG__?.apiKey && window.__FLIQ_FIREBASE_CONFIG__?.projectId) {
+    return { configured: true, config: window.__FLIQ_FIREBASE_CONFIG__, missing: [] };
   }
+  try {
+    const res = await fetch('/api/firebase-config', { cache: 'no-store' });
+    const text = await res.text();
+    if (text.startsWith('{')) {
+      const data = JSON.parse(text);
+      if (data.configured && data.config) {
+        if (typeof window !== 'undefined') window.__FLIQ_FIREBASE_CONFIG__ = data.config;
+        return data;
+      }
+    }
+  } catch {}
+  try {
+    const res = await fetch('/firebase-config.json', { cache: 'no-store' });
+    const text = await res.text();
+    if (text.startsWith('{')) {
+      const data = JSON.parse(text);
+      if (data.apiKey && data.projectId) {
+        if (typeof window !== 'undefined') window.__FLIQ_FIREBASE_CONFIG__ = data;
+        return { configured: true, config: data, missing: [] };
+      }
+    }
+  } catch {}
+  return { configured: false, config: null, missing: ['Web App configuration'] };
+}
+firebaseStatusPromise=(async()=>{
+  let health=null;
+  try{
+    const hr=await fetch('/api/health');
+    const text=await hr.text();
+    if(text.startsWith('{')) health=JSON.parse(text);
+  }catch(e){
+    console.warn('[FLIQ] /api/health not available (static hosting mode):',e.message);
+  }
+
+  const clientConfig=await getClientFirebaseConfig();
+  if(clientConfig.configured){
+    firebaseWebConfigured=true;
+    firebaseWebMissing=[];
+    initializeFirebaseClient().catch(e=>console.warn('[FLIQ] Background init notice:',e.message));
+  }else if(health){
+    firebaseWebConfigured=Boolean(health.firebaseWebConfigured);
+    firebaseWebMissing=health.firebaseWebMissing||[];
+    if(firebaseWebConfigured){
+      initializeFirebaseClient().catch(e=>console.warn('[FLIQ] Background init notice:',e.message));
+    }
+  }
+
+  if(health){
+    firebaseConfigured=Boolean(health.firebaseConfigured);
+    firebaseAdminConfigured=Boolean(health.firebaseAdminConfigured);
+  }else{
+    firebaseConfigured=firebaseWebConfigured;
+    firebaseAdminConfigured=false;
+  }
+
   if(isProtected(location.pathname)){
     try{
       const user=await getResolvedAuthState(5000);
@@ -40,12 +90,17 @@ firebaseStatusPromise=fetch('/api/health').then(r=>r.json()).then(async j=>{
       go('/login');
     }
   }
-  return j;
-}).catch(e=>{console.error('[FLIQ] Could not reach health endpoint:',e);return null});
+  return health||{ok:true,firebaseWebConfigured,firebaseConfigured};
+})();
 async function initializeFirebaseClient(){if(firebaseClientPromise)return firebaseClientPromise;firebaseClientPromise=(async()=>{
 console.log('[FLIQ] initializeFirebaseClient: starting');
-const response=await fetch('/api/firebase-config',{cache:'no-store'}),payload=await response.json();if(!response.ok||!payload.configured)throw Error('Firebase Web App configuration is incomplete. Add the exact web config values to .env and restart the server.');const base='https://www.gstatic.com/firebasejs/13.1.0/';const [appSdk,authSdk]=await Promise.all([import(`${base}firebase-app.js`),import(`${base}firebase-auth.js`)]);const app=appSdk.getApps().find(x=>x.options.projectId===payload.config.projectId)||appSdk.initializeApp(payload.config,'fliq-web');
-console.log('[FLIQ] initializeFirebaseClient: Firebase app ready, projectId=',payload.config.projectId);
+const clientConfig=await getClientFirebaseConfig();
+if(!clientConfig.configured||!clientConfig.config)throw Error('Firebase Web App configuration is incomplete. Add the exact web config values to .env or Netlify environment variables.');
+const config=clientConfig.config;
+const base='https://www.gstatic.com/firebasejs/13.1.0/';
+const [appSdk,authSdk]=await Promise.all([import(`${base}firebase-app.js`),import(`${base}firebase-auth.js`)]);
+const app=appSdk.getApps().find(x=>x.options.projectId===config.projectId)||appSdk.initializeApp(config,'fliq-web');
+console.log('[FLIQ] initializeFirebaseClient: Firebase app ready, projectId=',config.projectId);
 const auth=authSdk.getAuth(app);
 // Set persistence BEFORE reading any auth state or starting popup.
 // browserLocalPersistence stores the session in localStorage so it survives page reloads.
@@ -222,7 +277,7 @@ async function authHeaders(){
   try{const token=await user.getIdToken();return{authorization:`Bearer ${token}`};}catch(e){console.error('[FLIQ] authHeaders: getIdToken() threw:',e?.code,e?.message);return {};}
 }
 async function apiFetch(url,options={}){await firebaseStatusPromise;return fetch(url,{...options,headers:{...options.headers,...await authHeaders()}})}
-const logo='<a href="/" class="logo-link" data-route aria-label="FLIQ Home"><img class="logo" src="/fliq-logo.png" alt="FLIQ"></a>';
+const logo='<a href="/" class="logo-link" data-route aria-label="FLIQ Home"><img class="logo" src="/public/fliq-logo.png" onerror="this.onerror=null;this.src=\'/fliq-logo.png\'" alt="FLIQ"></a>';
 const go=p=>{
   if(path===p && p==='/'){
     window.scrollTo({top:0,behavior:'smooth'});
