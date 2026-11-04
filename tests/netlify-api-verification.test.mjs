@@ -260,4 +260,40 @@ describe('Netlify Serverless Function (netlify/functions/api.mjs) Verification',
     const body = JSON.parse(res.body);
     assert.equal(typeof body.configured, 'boolean');
   });
+
+  // 8. Netlify Functions Web Request / Response Verification
+  test('handler handles GET /api/health with standard Request returning Response', async () => {
+    const req = new Request('http://localhost/api/health', { method: 'GET' });
+    const res = await handler(req);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.serverless, true);
+  });
+
+  test('handler handles authenticated GET /api/tests with standard Request returning Response', async () => {
+    const validOwnerToken = createSignedFirebaseToken({ uid: targetOwnerUid });
+    const req = new Request('http://localhost/api/tests', {
+      method: 'GET',
+      headers: { authorization: `Bearer ${validOwnerToken}` }
+    });
+    const res = await handler(req);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(Array.isArray(body), true);
+    const found = body.find(t => t.id === targetTestId);
+    assert.ok(found, `Expected test ${targetTestId} in Response`);
+  });
+
+  test('handler returns 403 Forbidden for unauthorized single test access with standard Request', async () => {
+    const differentUserToken = createSignedFirebaseToken({ uid: 'unauthorized-user-xyz' });
+    const req = new Request(`http://localhost/api/tests/${targetTestId}`, {
+      method: 'GET',
+      headers: { authorization: `Bearer ${differentUserToken}` }
+    });
+    const res = await handler(req);
+    assert.equal(res.status, 403);
+    const body = await res.json();
+    assert.match(body.error, /permission|access denied/i);
+  });
 });

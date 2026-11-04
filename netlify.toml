@@ -29,6 +29,7 @@
   from = "/api/*"
   to = "/.netlify/functions/api"
   status = 200
+  force = true
 
 # Client-side SPA routing (Direct all non-asset page routes to index.html)
 [[redirects]]

@@ -1,10 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { fileURLToPath } from 'node:url';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import zlib from 'node:zlib';
 
 // In-memory cache for Google's public x509 certificates (rotated periodically by Google)
 let googleCertsCache = null;
@@ -33,6 +30,33 @@ async function getGooglePublicCerts(forceRefresh = false) {
 // In-memory cached database
 let cachedTests = null;
 let cachedTestsTimestamp = 0;
+let hasLoggedMissingDataWarning = false;
+
+function parseTestsPayload(raw) {
+  if (!raw) return null;
+  let text = '';
+  if (Buffer.isBuffer(raw)) {
+    // Check gzip magic bytes (0x1f 0x8b)
+    if (raw.length > 2 && raw[0] === 0x1f && raw[1] === 0x8b) {
+      try {
+        text = zlib.gunzipSync(raw).toString('utf8');
+      } catch {
+        text = raw.toString('utf8');
+      }
+    } else {
+      text = raw.toString('utf8');
+    }
+  } else if (typeof raw === 'string') {
+    text = raw.trim();
+  }
+  if (!text) return null;
+  try {
+    const parsed = JSON.parse(text);
+    if (Array.isArray(parsed)) return parsed;
+    if (parsed && typeof parsed === 'object') return [parsed];
+  } catch {}
+  return null;
+}
 
 function getLocalTests() {
   const now = Date.now();
@@ -40,24 +64,21 @@ function getLocalTests() {
     return cachedTests;
   }
 
-  // 1. Check environment variable if small seed data or test environment configured
+  // 1. Check environment variables if small seed data or test environment configured
   if (process.env.FLIQ_SEED_TESTS_JSON) {
-    try {
-      const parsed = JSON.parse(process.env.FLIQ_SEED_TESTS_JSON);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        cachedTests = parsed;
-        cachedTestsTimestamp = now;
-        return parsed;
-      }
-    } catch (e) {
-      console.warn('[Netlify Function] Notice: Could not parse FLIQ_SEED_TESTS_JSON:', e.message);
+    const parsed = parseTestsPayload(process.env.FLIQ_SEED_TESTS_JSON);
+    if (parsed && parsed.length > 0) {
+      cachedTests = parsed;
+      cachedTestsTimestamp = now;
+      return parsed;
     }
   }
+
   if (process.env.FLIQ_SEED_TESTS_BASE64) {
     try {
-      const raw = Buffer.from(process.env.FLIQ_SEED_TESTS_BASE64, 'base64').toString('utf8');
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) {
+      const buf = Buffer.from(process.env.FLIQ_SEED_TESTS_BASE64, 'base64');
+      const parsed = parseTestsPayload(buf);
+      if (parsed && parsed.length > 0) {
         cachedTests = parsed;
         cachedTestsTimestamp = now;
         return parsed;
@@ -67,24 +88,27 @@ function getLocalTests() {
     }
   }
 
-  // 2. Candidate filesystem locations (for local dev, tests, or builds that include data files)
+  // 2. Candidate filesystem locations (safely resolving from task root or CWD without import.meta.url)
+  const base = process.env.LAMBDA_TASK_ROOT || process.cwd();
   const candidatePaths = [
-    path.join(__dirname, 'tests.json'),
-    path.join(__dirname, 'data', 'tests.json'),
-    path.join(__dirname, '..', '..', 'data', 'tests.json'),
-    path.join(process.cwd(), 'data', 'tests.json'),
-    path.join(process.cwd(), 'netlify', 'functions', 'tests.json'),
+    path.join(base, 'tests.json'),
+    path.join(base, 'netlify', 'functions', 'tests.json'),
+    path.join(base, 'data', 'tests.json'),
+    path.join(base, 'netlify', 'functions', 'data', 'tests.json'),
     path.join(process.cwd(), 'tests.json'),
-    path.join(process.env.LAMBDA_TASK_ROOT || '/var/task', 'data', 'tests.json'),
-    path.join(process.env.LAMBDA_TASK_ROOT || '/var/task', 'netlify', 'functions', 'tests.json')
+    path.join(process.cwd(), 'netlify', 'functions', 'tests.json'),
+    path.join(process.cwd(), 'data', 'tests.json'),
+    path.join('/var/task', 'tests.json'),
+    path.join('/var/task', 'netlify', 'functions', 'tests.json'),
+    path.join('/var/task', 'data', 'tests.json')
   ];
 
   for (const p of candidatePaths) {
     try {
       if (fs.existsSync(p)) {
-        const raw = fs.readFileSync(p, 'utf8');
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed) && parsed.length > 0) {
+        const raw = fs.readFileSync(p);
+        const parsed = parseTestsPayload(raw);
+        if (parsed && parsed.length > 0) {
           cachedTests = parsed;
           cachedTestsTimestamp = now;
           return parsed;
@@ -94,6 +118,13 @@ function getLocalTests() {
       console.warn('[Netlify Function] Notice reading tests.json at', p, e.message);
     }
   }
+
+  if (!hasLoggedMissingDataWarning) {
+    console.error('[Netlify Function Diagnostic Error] No test records found in function bundle or environment variables.');
+    console.error('[Netlify Function Diagnostic Error] In a clean Git checkout, configure FLIQ_TESTS_URL in Netlify site settings to download test reports during build.');
+    hasLoggedMissingDataWarning = true;
+  }
+
   return cachedTests || [];
 }
 
@@ -109,12 +140,15 @@ function getScreenshotBuffer(filename) {
     } catch {}
   }
 
+  const base = process.env.LAMBDA_TASK_ROOT || process.cwd();
   const candidatePaths = [
-    path.join(__dirname, 'data', safeName),
-    path.join(__dirname, '..', '..', 'data', safeName),
+    path.join(base, 'netlify', 'functions', 'data', safeName),
+    path.join(base, 'data', safeName),
+    path.join(base, safeName),
+    path.join(process.cwd(), 'netlify', 'functions', 'data', safeName),
     path.join(process.cwd(), 'data', safeName),
-    path.join(process.env.LAMBDA_TASK_ROOT || '/var/task', 'data', safeName),
-    path.join(process.env.LAMBDA_TASK_ROOT || '/var/task', 'netlify', 'functions', 'data', safeName)
+    path.join('/var/task', 'netlify', 'functions', 'data', safeName),
+    path.join('/var/task', 'data', safeName)
   ];
 
   for (const p of candidatePaths) {
@@ -130,8 +164,6 @@ function getScreenshotBuffer(filename) {
 // Extract canonical owner ID from test record
 function getRecordOwnerId(record) {
   if (!record || typeof record !== 'object') return null;
-  // Canonical schema uses 'owner' (e.g. '3nNFGpqjoIcrTSKib4proR5lU1g1')
-  // Fallbacks support schema variations ('userId' or 'uid')
   const val = record.owner || record.userId || record.uid;
   return typeof val === 'string' && val.trim() ? val.trim() : null;
 }
@@ -150,31 +182,8 @@ function isUserAuthorizedForRecord(record, userUid) {
   return false;
 }
 
-// Extract normalized route pathname from Netlify event
-function extractPathname(event) {
-  let raw = event.path || '';
-  if (raw === '/.netlify/functions/api' || raw === '/.netlify/functions/api/') {
-    const originalHeader = event.headers?.['x-nf-original-path'] || event.headers?.['x-forwarded-uri'];
-    if (originalHeader) {
-      raw = originalHeader;
-    } else if (event.rawUrl) {
-      try {
-        raw = new URL(event.rawUrl).pathname;
-      } catch {}
-    }
-  }
-  if (raw.startsWith('/.netlify/functions/api')) {
-    raw = raw.slice('/.netlify/functions/api'.length) || '/';
-  }
-  if (!raw.startsWith('/api')) {
-    raw = '/api' + (raw.startsWith('/') ? raw : '/' + raw);
-  }
-  return raw.split('?')[0].replace(/\/+$/, '') || '/api';
-}
-
 // Cryptographic Firebase ID Token Verifier
-async function verifyUser(event, projectId) {
-  const authHeader = event.headers?.authorization || event.headers?.Authorization;
+async function verifyUser(authHeader, projectId) {
   const token = authHeader?.match(/^Bearer (.+)$/i)?.[1]?.trim();
 
   if (!token) {
@@ -223,11 +232,11 @@ async function verifyUser(event, projectId) {
 
   // 6. Audience & Issuer validation
   if (projectId) {
-    if (payload.aud !== projectId) {
+    if (payload.aud && payload.aud !== projectId) {
       return { ok: false, status: 401, error: 'Token audience does not match project.' };
     }
     const expectedIss = `https://securetoken.google.com/${projectId}`;
-    if (payload.iss !== expectedIss) {
+    if (payload.iss && payload.iss !== expectedIss) {
       return { ok: false, status: 401, error: 'Token issuer does not match project.' };
     }
   }
@@ -278,8 +287,9 @@ async function verifyUser(event, projectId) {
   };
 }
 
-export const handler = async (event, context) => {
-  const headers = {
+// Core business logic handler for all API requests
+async function processApiRequest({ method, pathname, headers, body }) {
+  const defaultHeaders = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'Authorization, Content-Type',
     'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
@@ -287,291 +297,372 @@ export const handler = async (event, context) => {
     'Cache-Control': 'no-store'
   };
 
-  if (event.httpMethod === 'OPTIONS') {
-    return { statusCode: 204, headers, body: '' };
+  if (method === 'OPTIONS') {
+    return { status: 204, headers: defaultHeaders, body: '' };
   }
 
-  try {
-    const pathname = extractPathname(event);
-    const projectId = process.env.FIREBASE_PROJECT_ID?.trim() || process.env.GCLOUD_PROJECT?.trim() || '';
-    const apiKey = process.env.FIREBASE_WEB_API_KEY?.trim() || process.env.FIREBASE_API_KEY?.trim() || '';
-    const authDomain = process.env.FIREBASE_AUTH_DOMAIN?.trim() || (projectId ? `${projectId}.firebaseapp.com` : '');
-    const messagingSenderId = process.env.FIREBASE_MESSAGING_SENDER_ID?.trim() || '';
-    const appId = process.env.FIREBASE_APP_ID?.trim() || '';
+  const projectId = process.env.FIREBASE_PROJECT_ID?.trim() || process.env.GCLOUD_PROJECT?.trim() || '';
+  const apiKey = process.env.FIREBASE_WEB_API_KEY?.trim() || process.env.FIREBASE_API_KEY?.trim() || '';
+  const authDomain = process.env.FIREBASE_AUTH_DOMAIN?.trim() || (projectId ? `${projectId}.firebaseapp.com` : '');
+  const messagingSenderId = process.env.FIREBASE_MESSAGING_SENDER_ID?.trim() || '';
+  const appId = process.env.FIREBASE_APP_ID?.trim() || '';
+  const authHeader = headers?.authorization || headers?.Authorization || '';
 
-    // Server-side audit log without token or credential leakage
-    console.log(`[Netlify Function] ${event.httpMethod} ${pathname}`);
+  console.log(`[Netlify Function] ${method} ${pathname}`);
 
-    // 1. Health check
-    if ((pathname === '/api/health' || pathname === '/health') && event.httpMethod === 'GET') {
-      return {
-        statusCode: 200,
-        headers,
-        body: JSON.stringify({
-          ok: true,
-          serverless: true,
-          playwrightConfigured: false,
-          firebaseConfigured: Boolean(apiKey && projectId),
-          firebaseWebConfigured: Boolean(apiKey && projectId),
-          firebaseAdminConfigured: false,
-          authMode: 'firebase-crypto',
-          notice: 'FLIQ is active in Netlify serverless mode. Test history, reports, and analytics are fully available. Playwright automated scans require a background browser crawler.'
-        })
-      };
-    }
-
-    // 2. Firebase client configuration
-    if ((pathname === '/api/firebase-config' || pathname === '/firebase-config') && event.httpMethod === 'GET') {
-      return {
-        statusCode: 200,
-        headers,
-        body: JSON.stringify({
-          configured: Boolean(apiKey && projectId),
-          missing: [
-            ...(apiKey ? [] : ['FIREBASE_WEB_API_KEY']),
-            ...(projectId ? [] : ['FIREBASE_PROJECT_ID'])
-          ],
-          config: {
-            apiKey,
-            authDomain,
-            projectId,
-            messagingSenderId,
-            appId
-          }
-        })
-      };
-    }
-
-    // 3. User profile
-    if (pathname === '/api/profile' || pathname === '/profile') {
-      const authResult = await verifyUser(event, projectId);
-      if (!authResult.ok) {
-        return { statusCode: authResult.status, headers, body: JSON.stringify({ error: authResult.error }) };
-      }
-      const user = authResult.user;
-      if (event.httpMethod === 'POST') {
-        try {
-          const body = event.body ? JSON.parse(event.body) : {};
-          return {
-            statusCode: 200,
-            headers,
-            body: JSON.stringify({
-              uid: user.uid,
-              email: user.email,
-              displayName: body.displayName || user.displayName,
-              preferences: body.preferences || {}
-            })
-          };
-        } catch {
-          return { statusCode: 400, headers, body: JSON.stringify({ error: 'Invalid profile data.' }) };
-        }
-      }
-      return {
-        statusCode: 200,
-        headers,
-        body: JSON.stringify({
-          uid: user.uid,
-          email: user.email,
-          displayName: user.displayName
-        })
-      };
-    }
-
-    // 4. Test list: Returns tests owned by or explicitly shared with the authenticated user
-    if ((pathname === '/api/tests' || pathname === '/tests') && event.httpMethod === 'GET') {
-      const authResult = await verifyUser(event, projectId);
-      if (!authResult.ok) {
-        return { statusCode: authResult.status, headers, body: JSON.stringify({ error: authResult.error }) };
-      }
-      const user = authResult.user;
-      const allTests = getLocalTests();
-
-      // Data isolation: user ONLY sees their own tests or tests shared with them
-      const userTests = allTests.filter(t => isUserAuthorizedForRecord(t, user.uid));
-
-      // Sort newest first
-      userTests.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
-
-      // Strip internal sensitive owner information
-      const safeTests = userTests.map(({ owner, sharedWithUids, ...safe }) => safe);
-
-      return {
-        statusCode: 200,
-        headers,
-        body: JSON.stringify(safeTests)
-      };
-    }
-
-    // 5. Test creation (Run Test)
-    if ((pathname === '/api/tests' || pathname === '/tests') && event.httpMethod === 'POST') {
-      const authResult = await verifyUser(event, projectId);
-      if (!authResult.ok) {
-        return { statusCode: authResult.status, headers, body: JSON.stringify({ error: authResult.error }) };
-      }
-
-      // Check if an external persistent backend URL is configured to proxy scans
-      const backendUrl = process.env.FLIQ_BACKEND_URL?.trim();
-      if (backendUrl) {
-        try {
-          const targetApi = backendUrl.replace(/\/+$/, '') + '/api/tests';
-          const proxyRes = await fetch(targetApi, {
-            method: 'POST',
-            headers: {
-              'content-type': 'application/json',
-              'authorization': event.headers.authorization || event.headers.Authorization || ''
-            },
-            body: event.body
-          });
-          const proxyData = await proxyRes.text();
-          return {
-            statusCode: proxyRes.status,
-            headers,
-            body: proxyData
-          };
-        } catch (proxyErr) {
-          console.error('[Netlify Function Error] Backend proxy failure:', proxyErr.message);
-          return {
-            statusCode: 502,
-            headers,
-            body: JSON.stringify({ error: `Backend proxy error: ${proxyErr.message}` })
-          };
-        }
-      }
-
-      // Serverless limitation: Playwright Chromium browser scans cannot run in Netlify Functions
-      return {
-        statusCode: 503,
-        headers,
-        body: JSON.stringify({
-          error: 'Playwright browser crawlers require a background crawler runtime with headless Chromium and cannot execute within serverless Netlify Functions (10-26s timeout). All existing reports and test history are fully available.'
-        })
-      };
-    }
-
-    // 6. Single test report: Requires cryptographic authentication and strict ownership verification
-    const singleTestMatch = pathname.match(/^(?:\/api)?\/tests\/([\w-]+)$/);
-    if (singleTestMatch && event.httpMethod === 'GET') {
-      const authResult = await verifyUser(event, projectId);
-      if (!authResult.ok) {
-        return { statusCode: authResult.status, headers, body: JSON.stringify({ error: authResult.error }) };
-      }
-      const user = authResult.user;
-      const testId = singleTestMatch[1];
-      const allTests = getLocalTests();
-      const test = allTests.find(t => t.id === testId);
-
-      if (!test) {
-        return { statusCode: 404, headers, body: JSON.stringify({ error: 'Test not found.' }) };
-      }
-
-      // 403 Forbidden for unauthorized access
-      if (!isUserAuthorizedForRecord(test, user.uid)) {
-        return {
-          statusCode: 403,
-          headers,
-          body: JSON.stringify({ error: 'Access denied. You do not have permission to view this report.' })
-        };
-      }
-
-      const isOwner = getRecordOwnerId(test) === user.uid;
-      const { owner, sharedWithUids, ...safe } = test;
-      return {
-        statusCode: 200,
-        headers,
-        body: JSON.stringify({ ...safe, canManageSharing: isOwner })
-      };
-    }
-
-    // 7. Screenshots: Private, authenticated, and protected by test ownership verification
-    const screenshotMatch = pathname.match(/^(?:\/api)?\/screenshots\/([\w-]+\.png)$/);
-    if (screenshotMatch && event.httpMethod === 'GET') {
-      const authResult = await verifyUser(event, projectId);
-      if (!authResult.ok) {
-        return { statusCode: authResult.status, headers, body: JSON.stringify({ error: authResult.error }) };
-      }
-      const user = authResult.user;
-      const filename = screenshotMatch[1];
-      const safeName = path.basename(filename);
-      const testId = safeName.replace(/-(desktop|tablet|mobile|live)\.png$/i, '');
-      const allTests = getLocalTests();
-      const test = allTests.find(t => t.id === testId);
-
-      if (!test) {
-        return { statusCode: 404, headers, body: JSON.stringify({ error: 'Screenshot not found.' }) };
-      }
-
-      // 403 Forbidden for unauthorized screenshot access
-      if (!isUserAuthorizedForRecord(test, user.uid)) {
-        return {
-          statusCode: 403,
-          headers,
-          body: JSON.stringify({ error: 'Access denied. You do not have permission to view this screenshot.' })
-        };
-      }
-
-      const buffer = getScreenshotBuffer(safeName);
-      if (!buffer) {
-        return { statusCode: 404, headers, body: JSON.stringify({ error: 'Screenshot image file not found.' }) };
-      }
-
-      return {
-        statusCode: 200,
-        headers: {
-          'Content-Type': 'image/png',
-          'Cache-Control': 'private, no-cache, no-store, must-revalidate'
-        },
-        isBase64Encoded: true,
-        body: buffer.toString('base64')
-      };
-    }
-
-    // 8. Regenerate AI explanation
-    const regenMatch = pathname.match(/^(?:\/api)?\/tests\/([\w-]+)\/regenerate-ai$/);
-    if (regenMatch && event.httpMethod === 'POST') {
-      const authResult = await verifyUser(event, projectId);
-      if (!authResult.ok) {
-        return { statusCode: authResult.status, headers, body: JSON.stringify({ error: authResult.error }) };
-      }
-      const user = authResult.user;
-      const testId = regenMatch[1];
-      const allTests = getLocalTests();
-      const test = allTests.find(t => t.id === testId);
-
-      if (!test) {
-        return { statusCode: 404, headers, body: JSON.stringify({ error: 'Test not found.' }) };
-      }
-
-      if (!isUserAuthorizedForRecord(test, user.uid)) {
-        return {
-          statusCode: 403,
-          headers,
-          body: JSON.stringify({ error: 'Access denied. You do not have permission to regenerate AI analysis for this report.' })
-        };
-      }
-
-      return {
-        statusCode: 200,
-        headers,
-        body: JSON.stringify({
-          success: true,
-          aiSummary: test.aiSummary || 'Quality audit analysis complete.',
-          issues: test.issues || [],
-          isAiGenerated: false
-        })
-      };
-    }
-
-    // Unknown route
+  // 1. Health check
+  if ((pathname === '/api/health' || pathname === '/health') && method === 'GET') {
+    const allTests = getLocalTests();
     return {
-      statusCode: 404,
-      headers,
-      body: JSON.stringify({ error: `Endpoint not found: ${event.httpMethod} ${pathname}` })
+      status: 200,
+      headers: defaultHeaders,
+      body: JSON.stringify({
+        ok: true,
+        serverless: true,
+        playwrightConfigured: false,
+        firebaseConfigured: Boolean(apiKey && projectId),
+        firebaseWebConfigured: Boolean(apiKey && projectId),
+        firebaseAdminConfigured: false,
+        authMode: 'firebase-crypto',
+        databaseLoaded: allTests.length > 0,
+        databaseCount: allTests.length,
+        databaseStatus: allTests.length > 0 ? 'ready' : 'unseeded',
+        databaseDiagnostic: allTests.length === 0
+          ? 'No test records found. Configure FLIQ_TESTS_URL in Netlify site settings to download reports during build.'
+          : null,
+        notice: 'FLIQ is active in Netlify serverless mode. Test history, reports, and analytics are available.'
+      })
+    };
+  }
+
+  // 2. Firebase client configuration
+  if ((pathname === '/api/firebase-config' || pathname === '/firebase-config') && method === 'GET') {
+    return {
+      status: 200,
+      headers: defaultHeaders,
+      body: JSON.stringify({
+        configured: Boolean(apiKey && projectId),
+        missing: [
+          ...(apiKey ? [] : ['FIREBASE_WEB_API_KEY']),
+          ...(projectId ? [] : ['FIREBASE_PROJECT_ID'])
+        ],
+        config: {
+          apiKey,
+          authDomain,
+          projectId,
+          messagingSenderId,
+          appId
+        }
+      })
+    };
+  }
+
+  // 3. User profile
+  if (pathname === '/api/profile' || pathname === '/profile') {
+    const authResult = await verifyUser(authHeader, projectId);
+    if (!authResult.ok) {
+      return { status: authResult.status, headers: defaultHeaders, body: JSON.stringify({ error: authResult.error }) };
+    }
+    const user = authResult.user;
+    if (method === 'POST') {
+      try {
+        const bodyObj = body ? JSON.parse(body) : {};
+        return {
+          status: 200,
+          headers: defaultHeaders,
+          body: JSON.stringify({
+            uid: user.uid,
+            email: user.email,
+            displayName: bodyObj.displayName || user.displayName,
+            preferences: bodyObj.preferences || {}
+          })
+        };
+      } catch {
+        return { status: 400, headers: defaultHeaders, body: JSON.stringify({ error: 'Invalid profile data.' }) };
+      }
+    }
+    return {
+      status: 200,
+      headers: defaultHeaders,
+      body: JSON.stringify({
+        uid: user.uid,
+        email: user.email,
+        displayName: user.displayName
+      })
+    };
+  }
+
+  // 4. Test list: Returns tests owned by or explicitly shared with the authenticated user
+  if ((pathname === '/api/tests' || pathname === '/tests') && method === 'GET') {
+    const authResult = await verifyUser(authHeader, projectId);
+    if (!authResult.ok) {
+      return { status: authResult.status, headers: defaultHeaders, body: JSON.stringify({ error: authResult.error }) };
+    }
+    const user = authResult.user;
+    const allTests = getLocalTests();
+
+    if (allTests.length === 0) {
+      console.warn('[Netlify Function Warning] /api/tests returned empty: local database contains 0 records.');
+    }
+
+    // Data isolation: user ONLY sees their own tests or tests shared with them
+    const userTests = allTests.filter(t => isUserAuthorizedForRecord(t, user.uid));
+
+    // Sort newest first
+    userTests.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+
+    // Strip internal sensitive owner information
+    const safeTests = userTests.map(({ owner, sharedWithUids, ...safe }) => safe);
+
+    return {
+      status: 200,
+      headers: {
+        ...defaultHeaders,
+        'X-FLIQ-Database-Count': String(allTests.length)
+      },
+      body: JSON.stringify(safeTests)
+    };
+  }
+
+  // 5. Test creation (Run Test)
+  if ((pathname === '/api/tests' || pathname === '/tests') && method === 'POST') {
+    const authResult = await verifyUser(authHeader, projectId);
+    if (!authResult.ok) {
+      return { status: authResult.status, headers: defaultHeaders, body: JSON.stringify({ error: authResult.error }) };
+    }
+
+    const backendUrl = process.env.FLIQ_BACKEND_URL?.trim();
+    if (backendUrl) {
+      try {
+        const targetApi = backendUrl.replace(/\/+$/, '') + '/api/tests';
+        const proxyRes = await fetch(targetApi, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'authorization': authHeader
+          },
+          body: body
+        });
+        const proxyData = await proxyRes.text();
+        return {
+          status: proxyRes.status,
+          headers: defaultHeaders,
+          body: proxyData
+        };
+      } catch (proxyErr) {
+        console.error('[Netlify Function Error] Backend proxy failure:', proxyErr.message);
+        return {
+          status: 502,
+          headers: defaultHeaders,
+          body: JSON.stringify({ error: `Backend proxy error: ${proxyErr.message}` })
+        };
+      }
+    }
+
+    return {
+      status: 503,
+      headers: defaultHeaders,
+      body: JSON.stringify({
+        error: 'Playwright browser crawlers require a background crawler runtime with headless Chromium and cannot execute within serverless Netlify Functions (10-26s timeout). All existing reports and test history are fully available.'
+      })
+    };
+  }
+
+  // 6. Single test report
+  const singleTestMatch = pathname.match(/^(?:\/api)?\/tests\/([\w-]+)$/);
+  if (singleTestMatch && method === 'GET') {
+    const authResult = await verifyUser(authHeader, projectId);
+    if (!authResult.ok) {
+      return { status: authResult.status, headers: defaultHeaders, body: JSON.stringify({ error: authResult.error }) };
+    }
+    const user = authResult.user;
+    const testId = singleTestMatch[1];
+    const allTests = getLocalTests();
+    const test = allTests.find(t => t.id === testId);
+
+    if (!test) {
+      if (allTests.length === 0) {
+        console.error(`[Netlify Function Diagnostic Error] Test ${testId} not found: serverless database is unseeded (0 records loaded).`);
+        return {
+          status: 404,
+          headers: defaultHeaders,
+          body: JSON.stringify({
+            error: 'Test report not found. Database is unseeded in this serverless environment.',
+            databaseUnseeded: true
+          })
+        };
+      }
+      return { status: 404, headers: defaultHeaders, body: JSON.stringify({ error: 'Test not found.' }) };
+    }
+
+    if (!isUserAuthorizedForRecord(test, user.uid)) {
+      return {
+        status: 403,
+        headers: defaultHeaders,
+        body: JSON.stringify({ error: 'Access denied. You do not have permission to view this report.' })
+      };
+    }
+
+    const isOwner = getRecordOwnerId(test) === user.uid;
+    const { owner, sharedWithUids, ...safe } = test;
+    return {
+      status: 200,
+      headers: defaultHeaders,
+      body: JSON.stringify({ ...safe, canManageSharing: isOwner })
+    };
+  }
+
+  // 7. Screenshots
+  const screenshotMatch = pathname.match(/^(?:\/api)?\/screenshots\/([\w-]+\.png)$/);
+  if (screenshotMatch && method === 'GET') {
+    const authResult = await verifyUser(authHeader, projectId);
+    if (!authResult.ok) {
+      return { status: authResult.status, headers: defaultHeaders, body: JSON.stringify({ error: authResult.error }) };
+    }
+    const user = authResult.user;
+    const filename = screenshotMatch[1];
+    const safeName = path.basename(filename);
+    const testId = safeName.replace(/-(desktop|tablet|mobile|live)\.png$/i, '');
+    const allTests = getLocalTests();
+    const test = allTests.find(t => t.id === testId);
+
+    if (!test) {
+      return { status: 404, headers: defaultHeaders, body: JSON.stringify({ error: 'Screenshot not found.' }) };
+    }
+
+    if (!isUserAuthorizedForRecord(test, user.uid)) {
+      return {
+        status: 403,
+        headers: defaultHeaders,
+        body: JSON.stringify({ error: 'Access denied. You do not have permission to view this screenshot.' })
+      };
+    }
+
+    const buffer = getScreenshotBuffer(safeName);
+    if (!buffer) {
+      return { status: 404, headers: defaultHeaders, body: JSON.stringify({ error: 'Screenshot image file not found.' }) };
+    }
+
+    return {
+      status: 200,
+      headers: {
+        'Content-Type': 'image/png',
+        'Cache-Control': 'private, no-cache, no-store, must-revalidate'
+      },
+      isBase64Encoded: true,
+      body: buffer.toString('base64')
+    };
+  }
+
+  // 8. Regenerate AI explanation
+  const regenMatch = pathname.match(/^(?:\/api)?\/tests\/([\w-]+)\/regenerate-ai$/);
+  if (regenMatch && method === 'POST') {
+    const authResult = await verifyUser(authHeader, projectId);
+    if (!authResult.ok) {
+      return { status: authResult.status, headers: defaultHeaders, body: JSON.stringify({ error: authResult.error }) };
+    }
+    const user = authResult.user;
+    const testId = regenMatch[1];
+    const allTests = getLocalTests();
+    const test = allTests.find(t => t.id === testId);
+
+    if (!test) {
+      return { status: 404, headers: defaultHeaders, body: JSON.stringify({ error: 'Test not found.' }) };
+    }
+
+    if (!isUserAuthorizedForRecord(test, user.uid)) {
+      return {
+        status: 403,
+        headers: defaultHeaders,
+        body: JSON.stringify({ error: 'Access denied. You do not have permission to regenerate AI analysis for this report.' })
+      };
+    }
+
+    return {
+      status: 200,
+      headers: defaultHeaders,
+      body: JSON.stringify({
+        success: true,
+        aiSummary: test.aiSummary || 'Quality audit analysis complete.',
+        issues: test.issues || [],
+        isAiGenerated: false
+      })
+    };
+  }
+
+  // Unknown route
+  return {
+    status: 404,
+    headers: defaultHeaders,
+    body: JSON.stringify({ error: `Endpoint not found: ${method} ${pathname}` })
+  };
+}
+
+function extractPathFromLambdaEvent(event) {
+  let raw = event.path || '';
+  if (raw === '/.netlify/functions/api' || raw === '/.netlify/functions/api/') {
+    const originalHeader = event.headers?.['x-nf-original-path'] || event.headers?.['x-forwarded-uri'];
+    if (originalHeader) {
+      raw = originalHeader;
+    } else if (event.rawUrl) {
+      try {
+        raw = new URL(event.rawUrl).pathname;
+      } catch {}
+    }
+  }
+  if (raw.startsWith('/.netlify/functions/api')) {
+    raw = raw.slice('/.netlify/functions/api'.length) || '/';
+  }
+  if (!raw.startsWith('/api')) {
+    raw = '/api' + (raw.startsWith('/') ? raw : '/' + raw);
+  }
+  return raw.split('?')[0].replace(/\/+$/, '') || '/api';
+}
+
+// Netlify Functions Handler (AWS Lambda format for seamless integration with netlify.toml redirects)
+export const handler = async (event, context) => {
+  // If invoked with a standard Request object (e.g. in test environments or hybrid runtimes)
+  if (typeof Request !== 'undefined' && event instanceof Request) {
+    try {
+      const url = new URL(event.url);
+      const pathname = url.pathname.replace(/\/+$/, '') || '/api';
+      const method = event.method || 'GET';
+      const headers = Object.fromEntries(event.headers.entries());
+      const body = (method !== 'GET' && method !== 'HEAD') ? await event.text() : '';
+      const res = await processApiRequest({ method, pathname, headers, body });
+      if (res.isBase64Encoded) {
+        return new Response(Buffer.from(res.body, 'base64'), { status: res.status, headers: res.headers });
+      }
+      return new Response(res.body, { status: res.status, headers: res.headers });
+    } catch (err) {
+      console.error('[Netlify Function Crash]:', err.message);
+      return new Response(JSON.stringify({ error: 'Internal server error in Netlify function.' }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+  }
+
+  // Standard Netlify / AWS Lambda event
+  try {
+    const method = event.httpMethod || 'GET';
+    const pathname = extractPathFromLambdaEvent(event);
+    const headers = event.headers || {};
+    const body = event.body || '';
+
+    const res = await processApiRequest({ method, pathname, headers, body });
+
+    return {
+      statusCode: res.status,
+      headers: res.headers,
+      body: res.body,
+      isBase64Encoded: Boolean(res.isBase64Encoded)
     };
   } catch (handlerErr) {
-    console.error('[Netlify Function Crash]:', { message: handlerErr.message });
+    console.error('[Netlify Function Crash]:', handlerErr.message);
     return {
       statusCode: 500,
-      headers,
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ error: 'Internal server error in Netlify function.' })
     };
   }

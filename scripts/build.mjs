@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -142,6 +143,20 @@ if (fs.existsSync(functionsDir)) {
     } catch (e) {
       console.warn('[FLIQ Build] Notice fetching FLIQ_TESTS_URL:', e.message);
     }
+  } else if (process.env.FLIQ_SEED_TESTS_BASE64) {
+    try {
+      const buf = Buffer.from(process.env.FLIQ_SEED_TESTS_BASE64, 'base64');
+      let text = '';
+      if (buf.length > 2 && buf[0] === 0x1f && buf[1] === 0x8b) {
+        text = zlib.gunzipSync(buf).toString('utf8');
+      } else {
+        text = buf.toString('utf8');
+      }
+      fs.writeFileSync(localTestsDest, text, 'utf8');
+      console.log('[FLIQ Build] Wrote tests.json from FLIQ_SEED_TESTS_BASE64 environment variable.');
+    } catch (e) {
+      console.warn('[FLIQ Build] Notice writing tests.json from base64:', e.message);
+    }
   } else if (process.env.FLIQ_SEED_TESTS_JSON) {
     try {
       fs.writeFileSync(localTestsDest, process.env.FLIQ_SEED_TESTS_JSON, 'utf8');
@@ -149,6 +164,11 @@ if (fs.existsSync(functionsDir)) {
     } catch (e) {
       console.warn('[FLIQ Build] Notice writing seeded tests.json:', e.message);
     }
+  }
+
+  if (!fs.existsSync(localTestsDest)) {
+    console.warn('[FLIQ Build Warning] No test records packaged into netlify/functions/tests.json.');
+    console.warn('[FLIQ Build Warning] In a clean Netlify Git checkout, set FLIQ_TESTS_URL in environment variables to automatically download test reports during build.');
   }
 
   const funcDataDir = path.join(functionsDir, 'data');
