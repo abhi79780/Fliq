@@ -64,32 +64,6 @@ firebaseStatusPromise=(async()=>{
     firebaseConfigured=firebaseWebConfigured;
     firebaseAdminConfigured=false;
   }
-
-  if(isProtected(location.pathname)){
-    try{
-      const user=await getResolvedAuthState(5000);
-      if(user){
-        if(user.email)localStorage.setItem('fliqEmail',user.email);
-        if(user.displayName)localStorage.setItem('fliqName',user.displayName);
-      }else{
-        const params=new URLSearchParams(location.search);
-        const plan=params.get('plan')||sessionStorage.getItem('fliqPendingPlan');
-        const per=params.get('period')||sessionStorage.getItem('fliqPendingPeriod');
-        if(plan){
-          try{
-            sessionStorage.setItem('fliqPendingPlan',plan);
-            if(per)sessionStorage.setItem('fliqPendingPeriod',per);
-          }catch{}
-          go(`/login?plan=${encodeURIComponent(plan)}&period=${encodeURIComponent(per||'monthly')}`);
-        }else{
-          go('/login');
-        }
-      }
-    }catch(e){
-      console.error('[FLIQ] Auth startup check failed:',e);
-      go('/login');
-    }
-  }
   return health||{ok:true,firebaseWebConfigured,firebaseConfigured};
 })();
 async function initializeFirebaseClient(){if(firebaseClientPromise)return firebaseClientPromise;firebaseClientPromise=(async()=>{
@@ -126,8 +100,7 @@ try{const rr=await authSdk.getRedirectResult(auth);if(rr?.user){console.log('[FL
 firebaseAuth=auth;firebaseAuthSdk=authSdk;
 console.log('[FLIQ] initializeFirebaseClient: complete — currentUser=',auth.currentUser?.uid??'null');
 return{auth:firebaseAuth,sdk:authSdk}})().catch(error=>{console.error('[FLIQ] Firebase client initialization failed:',error);firebaseClientPromise=null;throw error});return firebaseClientPromise}
-async function getResolvedAuthState(maxWaitMs=3000){
-  await firebaseStatusPromise;
+async function getResolvedAuthState(maxWaitMs=3500){
   const testUid=localStorage.getItem('fliqTestUid');
   if(testUid){
     return {
@@ -136,13 +109,42 @@ async function getResolvedAuthState(maxWaitMs=3000){
       displayName:localStorage.getItem('fliqName')||'Test User'
     };
   }
-  if(firebaseWebConfigured){
-    try{
-      const {auth,sdk}=await initializeFirebaseClient();
-      if(authStateResolved){
-        return auth.currentUser||resolvedAuthUser;
-      }
-      return await new Promise(resolve=>{
+  if(authStateResolved && (firebaseAuth?.currentUser || resolvedAuthUser)){
+    return firebaseAuth?.currentUser || resolvedAuthUser;
+  }
+  try{
+    const {auth,sdk}=await initializeFirebaseClient();
+    if(authStateResolved && (auth.currentUser || resolvedAuthUser)){
+      return auth.currentUser || resolvedAuthUser;
+    }
+    return await new Promise(resolve=>{
+      let unsub=null;
+      const timer=setTimeout(()=>{
+        if(unsub)unsub();
+        resolve(auth.currentUser||resolvedAuthUser||null);
+      },maxWaitMs);
+      unsub=sdk.onAuthStateChanged(auth,u=>{
+        clearTimeout(timer);
+        if(unsub)unsub();
+        resolve(u);
+      },()=>{
+        clearTimeout(timer);
+        if(unsub)unsub();
+        resolve(null);
+      });
+    });
+  }catch(err){
+    console.error('[FLIQ] getResolvedAuthState error:',err);
+  }
+  if(localStorage.getItem('fliqEmail')){
+    return {
+      uid:'local',
+      email:localStorage.getItem('fliqEmail'),
+      displayName:localStorage.getItem('fliqName')||'Local User'
+    };
+  }
+  return null;
+}
         let unsub=null;
         const timer=setTimeout(()=>{
           if(unsub)unsub();
@@ -269,14 +271,30 @@ await navigatePostAuth();
 }catch(error){
 console.error('[FLIQ] Google sign-in failed:',error?.code,error?.message,error);const isSelfDescribing=error.message?.startsWith('Firebase Web Authentication')||error.message?.startsWith('Firebase Web App');const friendly=friendlyFirebaseAuthError(error);
 const hasMapping=friendly!=='Firebase could not complete the request. Check your details and try again.';message.textContent=isSelfDescribing?error.message:(hasMapping?friendly:`${friendly} (${error?.code||error?.message||'unknown error'})`);buttons.forEach(x=>x.disabled=false);}}function isProtected(p){if(p==='/dashboard'||p==='/onboarding'||p==='/checkout'||p.startsWith('/checkout/'))return true;if(p.startsWith('/dashboard/tests/'))return false;return p.startsWith('/dashboard/');}
+const API_BASE = (typeof window !== 'undefined' && (window.__FLIQ_FIREBASE_CONFIG__?.apiUrl || window.__FLIQ_API_URL__)) || '';
+
 async function authHeaders(){
   const testUid=localStorage.getItem('fliqTestUid');
   if(testUid) return {'x-fliq-test-uid':testUid};
-  const user=firebaseAuth?.currentUser;
-  if(!user){return {};}
-  try{const token=await user.getIdToken();return{authorization:`Bearer ${token}`};}catch(e){console.error('[FLIQ] authHeaders: getIdToken() threw:',e?.code,e?.message);return {};}
+  let user=firebaseAuth?.currentUser||resolvedAuthUser;
+  if(!user&&firebaseWebConfigured){
+    try{ user=await getResolvedAuthState(2500); }catch{}
+  }
+  if(!user||typeof user.getIdToken!=='function'){return {};}
+  try{
+    const token=await user.getIdToken();
+    return{authorization:`Bearer ${token}`};
+  }catch(e){
+    console.error('[FLIQ] authHeaders: getIdToken() threw:',e?.code,e?.message);
+    return {};
+  }
 }
-async function apiFetch(url,options={}){await firebaseStatusPromise;return fetch(url,{...options,headers:{...options.headers,...await authHeaders()}})}
+async function apiFetch(url,options={}){
+  await firebaseStatusPromise;
+  const resolvedUrl = (url.startsWith('/api') && API_BASE) ? (API_BASE.replace(/\/+$/, '') + url) : url;
+  const headers = { ...options.headers, ...(await authHeaders()) };
+  return fetch(resolvedUrl, { ...options, headers });
+}
 const logo='<a href="/" class="logo-link" data-route aria-label="FLIQ Home"><img class="logo" src="/public/fliq-logo.png" onerror="this.onerror=null;this.src=\'/fliq-logo.png\'" alt="FLIQ"></a>';
 const go=p=>{
   if(path===p && p==='/'){
@@ -534,28 +552,167 @@ function forgot(){
 const items=[['⌂','Dashboard','/dashboard'],['＋','New Test','/dashboard/new-test'],['◷','History','/dashboard/history'],['▤','Reports','/dashboard/reports'],['◎','Monitors','/dashboard/monitors'],['♧','Team','/dashboard/team'],['⚙','Settings','/dashboard/settings']];
 const side=()=>`<aside class="sidebar">${logo}<div class="side-links">${items.map(([i,n,p])=>`<a class="${path===p?'current':''}" href="${p}" data-route><span>${i}</span>${n}</a>`).join('')}</div><div class="side-bottom"><span>F</span><div>FLIQ workspace<br><small>Free plan</small></div><button data-action="signout" aria-label="Sign out">↗</button></div></aside>`;
 const appShell=content=>`<div class="app-layout">${side()}<main class="app-main"><header class="app-top"><input class="search" placeholder="⌕  Search tests..." aria-label="Search tests"><div class="top-icons"><button aria-label="Notifications">♧</button><button class="avatar" data-go="/dashboard/settings">${(localStorage.getItem('fliqName')||'A')[0].toUpperCase()}</button></div></header>${content}</main></div>`;
-async function tests(){testLoadMessage='';try{
-console.log('[FLIQ] tests(): calling /api/tests — firebaseAuth=',firebaseAuth?'set':'null','currentUser=',firebaseAuth?.currentUser?.uid??'null');
-const r=await apiFetch('/api/tests');
-console.log('[FLIQ] tests(): /api/tests response status=',r.status);
-const data=await r.json();if(r.status===401){
-    console.warn('[FLIQ] tests(): 401 received — server error:',data?.error,'— currentUser=',firebaseAuth?.currentUser?.uid??'null');
-    // 401 means the session token was rejected by the server.
-    // Only force sign-out and redirect if we are NOT in the middle of a fresh OAuth sign-in.
-    // We detect "fresh sign-in" by checking firebaseAuth.currentUser — if the Firebase client
-    // reports a valid user but the server rejects the token, it is a server-side credential
-    // problem (e.g. Firebase Admin not configured, wrong project), NOT an expired session.
-    // Signing the user out in that case would undo a successful Google OAuth flow.
-    if(firebaseWebConfigured && !firebaseAuth?.currentUser){firebaseAuthSdk?.signOut(firebaseAuth).catch(()=>{});go('/login')}
-    else if(firebaseWebConfigured && firebaseAuth?.currentUser){
-      // Server rejected a valid client-side token. Show an informational message on the
-      // dashboard rather than kicking the user out. The Firebase Web session is intact.
-      testLoadMessage=data.error||'Could not load tests. Server authentication is not configured yet.';}
-    return [];}if(!r.ok){testLoadMessage=data.error||'Could not load your test reports.';return []}return Array.isArray(data)?data:[]}catch(e){console.error('[FLIQ] tests(): fetch threw:',e);testLoadMessage='Could not contact the FLIQ server.';return []}}
+let testLoadError = false;
+let testLoadMessage = '';
+
+async function tests(){
+  testLoadError = false;
+  testLoadMessage = '';
+  try {
+    const user = await getResolvedAuthState(2500);
+    console.groupCollapsed('[FLIQ API Diagnostics] Fetching user tests');
+    console.log('User UID:', user?.uid || 'none');
+    console.log('User Email:', user?.email || 'none');
+    
+    const r = await apiFetch('/api/tests');
+    console.log('/api/tests status:', r.status);
+    
+    const text = await r.text();
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch (parseErr) {
+      console.error('/api/tests returned non-JSON:', text.slice(0, 250));
+      testLoadError = true;
+      testLoadMessage = 'Could not contact the FLIQ server. The API returned an invalid response.';
+      console.groupEnd();
+      return null;
+    }
+
+    if (r.status === 401) {
+      console.warn('/api/tests 401 response:', data?.error);
+      if (firebaseWebConfigured && !user) {
+        firebaseAuthSdk?.signOut(firebaseAuth).catch(() => {});
+        go('/login');
+        console.groupEnd();
+        return null;
+      }
+      testLoadError = true;
+      testLoadMessage = data?.error || 'Authentication required to load test reports.';
+      console.groupEnd();
+      return null;
+    }
+
+    if (!r.ok) {
+      console.error('/api/tests HTTP error:', r.status, data);
+      testLoadError = true;
+      testLoadMessage = data?.error || `Could not load your test reports (HTTP ${r.status}).`;
+      console.groupEnd();
+      return null;
+    }
+
+    console.log('Loaded test records count:', Array.isArray(data) ? data.length : 0);
+    console.groupEnd();
+    return Array.isArray(data) ? data : [];
+  } catch (e) {
+    console.error('[FLIQ API Diagnostics] tests() fetch exception:', e);
+    console.groupEnd();
+    testLoadError = true;
+    testLoadMessage = 'Could not contact the FLIQ server. Please check your connection.';
+    return null;
+  }
+}
+
 function metric(n,v,sub){return `<article class="metric"><span>${n}</span><strong>${v}</strong><small>${sub}</small></article>`}
-async function dashboard(){const all=await tests();const done=all.filter(t=>t.status==='completed');const issues=done.reduce((n,t)=>n+(t.issues?.length||0),0);const avg=done.length?`${(done.reduce((n,t)=>n+(t.loadTime||0),0)/done.length/1000).toFixed(1)}s`:'—';return appShell(`<section class="welcome"><span class="eyebrow">YOUR WORKSPACE</span><h1>Welcome back, ${esc(localStorage.getItem('fliqName')||'there')} 👋</h1><p>Here's what's happening with your websites.</p></section><div class="metrics">${metric('Total Tests',all.length,'All time')}${metric('Issues Found',issues,'Across completed tests')}${metric('Healthy Sites',done.filter(t=>!t.issues?.length).length,'No issues found')}${metric('Avg. Load Time',avg,'Across completed tests')}</div><section class="run-panel"><h2>Test a new website</h2><p>Get a clear picture of how your website is doing.</p><form id="test-form"><input name="url" type="url" placeholder="https://example.com" required><button class="btn lime" type="submit">Run Test →</button></form><div id="test-error" aria-live="polite"></div></section><div class="section-heading"><h2>Recent Tests</h2><a href="/dashboard/history" data-route>View all →</a></div>${testRows(all.slice(0,5))}`)}
-function testRows(rows){const notice=testLoadMessage?`<div class="setup-note">${esc(testLoadMessage)}</div>`:'';return notice+(rows.length?`<div class="test-list">${rows.map(t=>`<a class="test-row" href="/dashboard/tests/${t.id}" data-route><span class="site-dot">◎</span><span class="test-host">${esc(t.hostname||t.url)}<small>${new Date(t.createdAt).toLocaleString()}</small></span><span class="badge ${t.status}">${t.status}</span><span>${t.status==='completed'?`${t.issues?.length||0} issues`:t.status==='failed'?'Failed':'—'}</span><b>View →</b></a>`).join('')}</div>`:`<div class="empty"><div class="empty-icon">◎</div><h3>Your testing story starts here.</h3><p>Run your first test to see a clear report with actionable findings.</p><button class="btn outline" data-go="/dashboard/new-test">Start a test →</button></div>`)}async function historyPage(title){return appShell(`<div class="page-head"><span class="eyebrow">YOUR WORKSPACE</span><h1>${title}</h1><p>Review your website testing activity.</p></div>${testRows(await tests())}`)}
-function newTest(){return appShell(`<div class="new-test-page"><a href="/dashboard" data-route>← Back to dashboard</a><span class="eyebrow">NEW TEST</span><h1>What should we test?</h1><p>Enter a public website URL. FLIQ will safely check the page and report what it finds.</p><form class="new-test-form" id="test-form"><label>Website URL<input name="url" type="url" placeholder="https://example.com" required></label><button class="btn black" type="submit">Run website test →</button><div id="test-error" aria-live="polite"></div></form>${firebaseAdminConfigured?'':'<div class="setup-note">Firebase Web Authentication works independently. Server-side Firebase Admin setup is still required for secure scans, report ownership, and cloud report storage.</div>'}</div>`)}
+
+async function dashboard(){
+  const all = await tests();
+  const isError = all === null;
+  const list = Array.isArray(all) ? all : [];
+  const done = list.filter(t => t.status === 'completed');
+  const issues = isError ? '—' : done.reduce((n, t) => n + (t.issues?.length || 0), 0);
+  const totalCount = isError ? '—' : list.length;
+  const healthyCount = isError ? '—' : done.filter(t => !t.issues?.length).length;
+  const avg = isError ? '—' : (done.length ? `${(done.reduce((n, t) => n + (t.loadTime || t.durationMs || 0), 0) / done.length / 1000).toFixed(1)}s` : '—');
+
+  const errorBanner = isError ? `
+    <div class="setup-note" style="border-left-color:#c94438;background:#fff5f4;padding:16px 20px;border-radius:8px;margin-bottom:24px">
+      <strong style="color:#a02c24;font-size:14px;display:block;margin-bottom:4px">⚠️ Could not contact the FLIQ API server</strong>
+      <p style="margin:0 0 12px;color:#5a544b;font-size:13px">${esc(testLoadMessage)}</p>
+      <button class="btn black" style="padding:6px 14px;font-size:12px" data-action="retry-tests">Retry Connection ↺</button>
+    </div>
+  ` : '';
+
+  return appShell(`
+    <section class="welcome">
+      <span class="eyebrow">YOUR WORKSPACE</span>
+      <h1>Welcome back, ${esc(localStorage.getItem('fliqName') || 'there')} 👋</h1>
+      <p>Here's what's happening with your websites.</p>
+    </section>
+    <div class="metrics">
+      ${metric('Total Tests', totalCount, isError ? 'Unable to load' : 'All time')}
+      ${metric('Issues Found', issues, isError ? 'Unable to load' : 'Across completed tests')}
+      ${metric('Healthy Sites', healthyCount, isError ? 'Unable to load' : 'No issues found')}
+      ${metric('Avg. Load Time', avg, isError ? 'Unable to load' : 'Across completed tests')}
+    </div>
+    ${errorBanner}
+    <section class="run-panel">
+      <h2>Test a new website</h2>
+      <p>Get a clear picture of how your website is doing.</p>
+      <form id="test-form">
+        <input name="url" type="url" placeholder="https://example.com" required>
+        <button class="btn lime" type="submit">Run Test →</button>
+      </form>
+      <div id="test-error" aria-live="polite"></div>
+    </section>
+    <div class="section-heading">
+      <h2>Recent Tests</h2>
+      <a href="/dashboard/history" data-route>View all →</a>
+    </div>
+    ${isError ? '' : testRows(list.slice(0, 5))}
+  `);
+}
+
+function testRows(rows){
+  if (testLoadError && testLoadMessage) {
+    return `
+      <div class="setup-note" style="border-left-color:#c94438;background:#fff5f4;padding:16px 20px;border-radius:8px">
+        <strong style="color:#a02c24;font-size:14px;display:block;margin-bottom:4px">⚠️ Could not load test history</strong>
+        <p style="margin:0 0 12px;color:#5a544b;font-size:13px">${esc(testLoadMessage)}</p>
+        <button class="btn black" style="padding:6px 14px;font-size:12px" data-action="retry-tests">Retry Connection ↺</button>
+      </div>
+    `;
+  }
+  return rows.length ? `<div class="test-list">${rows.map(t=>`<a class="test-row" href="/dashboard/tests/${t.id}" data-route><span class="site-dot">◎</span><span class="test-host">${esc(t.hostname||t.url)}<small>${new Date(t.createdAt).toLocaleString()}</small></span><span class="badge ${t.status}">${t.status}</span><span>${t.status==='completed'?`${t.issues?.length||0} issues`:t.status==='failed'?'Failed':'—'}</span><b>View →</b></a>`).join('')}</div>` : `<div class="empty"><div class="empty-icon">◎</div><h3>Your testing story starts here.</h3><p>Run your first test to see a clear report with actionable findings.</p><button class="btn outline" data-go="/dashboard/new-test">Start a test →</button></div>`;
+}
+
+async function historyPage(title){
+  const all = await tests();
+  const isError = all === null;
+  const list = Array.isArray(all) ? all : [];
+  return appShell(`
+    <div class="page-head">
+      <span class="eyebrow">YOUR WORKSPACE</span>
+      <h1>${esc(title)}</h1>
+      <p>Review your website testing activity.</p>
+    </div>
+    ${isError ? `
+      <div class="setup-note" style="border-left-color:#c94438;background:#fff5f4;padding:16px 20px;border-radius:8px">
+        <strong style="color:#a02c24;font-size:14px;display:block;margin-bottom:4px">⚠️ Could not contact the FLIQ API server</strong>
+        <p style="margin:0 0 12px;color:#5a544b;font-size:13px">${esc(testLoadMessage)}</p>
+        <button class="btn black" style="padding:6px 14px;font-size:12px" data-action="retry-tests">Retry Connection ↺</button>
+      </div>
+    ` : testRows(list)}
+  `);
+}
+
+function newTest(){
+  return appShell(`
+    <div class="new-test-page">
+      <a href="/dashboard" data-route>← Back to dashboard</a>
+      <span class="eyebrow">NEW TEST</span>
+      <h1>What should we test?</h1>
+      <p>Enter a public website URL. FLIQ will safely check the page and report what it finds.</p>
+      <form class="new-test-form" id="test-form">
+        <label>Website URL
+          <input name="url" type="url" placeholder="https://example.com" required>
+        </label>
+        <button class="btn black" type="submit">Run website test →</button>
+        <div id="test-error" aria-live="polite"></div>
+      </form>
+    </div>
+  `);
+}
 let liveActiveCategory = 'all';
 let liveActiveClassification = 'all';
 let liveSelectedFindingId = null;
@@ -573,8 +730,10 @@ const CANONICAL_LIVE_STAGES = [
 
 async function progressPage(id) {
   const rr = await apiFetch(`/api/tests/${id}`);
-  const t = await rr.json();
-  if (t.error) return appShell(`<div class="empty"><h2>Test not found</h2><a href="/dashboard" data-route>Return to dashboard</a></div>`);
+  const text = await rr.text();
+  let t;
+  try { t = JSON.parse(text); } catch { t = { error: 'Could not contact the FLIQ API server.' }; }
+  if (t.error) return appShell(`<div class="empty"><h2>${esc(t.error)}</h2><a href="/dashboard" data-route>Return to dashboard</a></div>`);
   if (t.status === 'completed') return resultPage(id);
 
   if (t.status === 'failed') {
@@ -1269,8 +1428,11 @@ function coverageTabContent(t) {
 }
 
 async function resultPage(id){
-  const rr=await apiFetch(`/api/tests/${id}`),t=await rr.json();
-  if(t.error)return appShell(`<div class="empty"><h2>Test not found</h2><a href="/dashboard" data-route>Return to dashboard</a></div>`);
+  const rr=await apiFetch(`/api/tests/${id}`);
+  const text=await rr.text();
+  let t;
+  try{ t=JSON.parse(text); }catch{ t={error:'Could not contact the FLIQ API server.'}; }
+  if(t.error)return appShell(`<div class="empty"><h2>${esc(t.error)}</h2><a href="/dashboard" data-route>Return to dashboard</a></div>`);
   if(t.status!=='completed')return progressPage(id);
 
   const allIssues = t.issues || [];
@@ -1424,7 +1586,11 @@ async function resultPage(id){
 }
 
 async function issuePage(testId,issueId){
-  const t=await(await apiFetch(`/api/tests/${testId}`)).json(),i=t.issues?.find(x=>x.id===issueId);
+  const r = await apiFetch(`/api/tests/${testId}`);
+  const text = await r.text();
+  let t;
+  try { t = JSON.parse(text); } catch { t = { error: 'Could not contact the FLIQ API server.' }; }
+  const i=t.issues?.find(x=>x.id===issueId);
   if(!i)return appShell(`<div class="empty"><h2>Issue not found</h2><a href="/dashboard/tests/${testId}" data-route>Back to report</a></div>`);
   const elements=i.elements||[];
   const isConfirmed=i.classification==='Confirmed Failure'||(!i.classification&&i.type==='failure');
@@ -1625,7 +1791,91 @@ function checkoutPage(){
   `);
 }
 function hydrateScreenshots(){document.querySelectorAll('[data-screenshot]').forEach(async img=>{try{const r=await apiFetch(img.dataset.screenshot);if(r.ok)img.src=URL.createObjectURL(await r.blob())}catch{}})}
-function render(){try{stopHeroWalkthrough();clearProductDemo();path=location.pathname;const current=path;const parts=path.split('/').filter(Boolean);let out;if(path==='/')out=home();else if(path==='/features')out=features();else if(path==='/pricing')out=pricing();else if(path==='/checkout'||path.startsWith('/checkout'))out=checkoutPage();else if(path==='/signup')out=auth(true);else if(path==='/login')out=auth(false);else if(path==='/forgot-password')out=forgot();else if(path==='/onboarding')out=onboarding();else if(path==='/dashboard')out='';else if(path==='/dashboard/new-test')out=newTest();else if(path==='/dashboard/settings')out=settings();else if(['/dashboard/history','/dashboard/reports','/dashboard/monitors','/dashboard/team'].includes(path))out=historyPage(({ '/dashboard/history':'Test History','/dashboard/reports':'Reports','/dashboard/monitors':'Monitors','/dashboard/team':'Team'}[path]));else if(parts[0]==='dashboard'&&parts[1]==='tests'&&parts[3]==='issues')out=issuePage(parts[2],parts[4]);else if(parts[0]==='dashboard'&&parts[1]==='tests')out=resultPage(parts[2]);else if(path==='/docs')out=docs();else if(path==='/blog')out=blog();else if(path==='/demo')out=demo();else out=`${nav()}<main class="text-page"><h1>Page not found</h1>${btn('Go home','/')}</main>`;if(out instanceof Promise)out.then(v=>{if(location.pathname===current){$('#app').innerHTML=v;hydrateScreenshots();if(current.match(/^\/dashboard\/tests\/[^/]+$/)&&!v.includes('report-head'))poll(current.split('/')[3])}}).catch(err=>{console.error('[FLIQ] Render error:',err);const el=$('#app');if(el)el.innerHTML=appShell(`<div class="empty"><h2>Unable to load page</h2><p>${esc(err.message)}</p><a href="/dashboard" data-route>Return to dashboard</a></div>`);});else if(out==='')dashboard().then(v=>{if(location.pathname==='/dashboard')$('#app').innerHTML=v}).catch(err=>{console.error('[FLIQ] Dashboard error:',err);const el=$('#app');if(el)el.innerHTML=appShell(`<div class="empty"><h2>Unable to load dashboard</h2><p>${esc(err.message)}</p></div>`);});else{$('#app').innerHTML=out;if(current==='/'){startHeroWalkthrough();startProductDemo()}}}catch(renderErr){console.error('[FLIQ] Render exception:',renderErr);const el=$('#app');if(el)el.innerHTML=`<div style="padding:40px;font-family:sans-serif;max-width:600px;margin:auto"><h2>Could not render page</h2><p>${esc(renderErr.message)}</p><p><a href="/">Return to Home</a></p></div>`;}}
+function render(){
+  try{
+    stopHeroWalkthrough();
+    clearProductDemo();
+    path=location.pathname;
+    const current=path;
+    const parts=path.split('/').filter(Boolean);
+
+    // If visiting a protected workspace route, ensure auth state is ready
+    if(isProtected(path)){
+      if(!authStateResolved){
+        $('#app').innerHTML = appShell(`
+          <div class="empty" style="max-width:440px;margin:80px auto;text-align:center">
+            <div class="spinner" style="width:36px;height:36px;border:3px solid #e7e2da;border-top-color:#111;border-radius:50%;animation:spin 0.8s linear infinite;margin:0 auto 16px"></div>
+            <h3 style="font-size:18px;margin-bottom:6px">Loading your workspace…</h3>
+            <p style="color:#716c65;font-size:13px;margin:0">Verifying session and connecting to FLIQ…</p>
+          </div>
+        `);
+        getResolvedAuthState(3500).then(user => {
+          if(user){
+            if(isProtected(location.pathname)) render();
+          }else{
+            const params = new URLSearchParams(location.search);
+            const plan = params.get('plan') || sessionStorage.getItem('fliqPendingPlan');
+            const per = params.get('period') || sessionStorage.getItem('fliqPendingPeriod');
+            if(plan){
+              try{
+                sessionStorage.setItem('fliqPendingPlan', plan);
+                if(per) sessionStorage.setItem('fliqPendingPeriod', per);
+              }catch{}
+              go(`/login?plan=${encodeURIComponent(plan)}&period=${encodeURIComponent(per||'monthly')}`);
+            }else{
+              go('/login');
+            }
+          }
+        });
+        return;
+      } else if(!resolvedAuthUser && !firebaseAuth?.currentUser && !localStorage.getItem('fliqTestUid') && !localStorage.getItem('fliqEmail')){
+        go('/login');
+        return;
+      }
+    }
+
+    let out;
+    if(path==='/') out=home();
+    else if(path==='/features') out=features();
+    else if(path==='/pricing') out=pricing();
+    else if(path==='/checkout'||path.startsWith('/checkout')) out=checkoutPage();
+    else if(path==='/signup') out=auth(true);
+    else if(path==='/login') out=auth(false);
+    else if(path==='/forgot-password') out=forgot();
+    else if(path==='/onboarding') out=onboarding();
+    else if(path==='/dashboard') out=dashboard();
+    else if(path==='/dashboard/new-test') out=newTest();
+    else if(path==='/dashboard/settings') out=settings();
+    else if(['/dashboard/history','/dashboard/reports','/dashboard/monitors','/dashboard/team'].includes(path)) out=historyPage(({ '/dashboard/history':'Test History','/dashboard/reports':'Reports','/dashboard/monitors':'Monitors','/dashboard/team':'Team'}[path]));
+    else if(parts[0]==='dashboard'&&parts[1]==='tests'&&parts[3]==='issues') out=issuePage(parts[2],parts[4]);
+    else if(parts[0]==='dashboard'&&parts[1]==='tests') out=resultPage(parts[2]);
+    else if(path==='/docs') out=docs();
+    else if(path==='/blog') out=blog();
+    else if(path==='/demo') out=demo();
+    else out=`${nav()}<main class="text-page"><h1>Page not found</h1>${btn('Go home','/')}</main>`;
+
+    if(out instanceof Promise){
+      out.then(v=>{
+        if(location.pathname===current){
+          $('#app').innerHTML=v;
+          hydrateScreenshots();
+          if(current.match(/^\/dashboard\/tests\/[^/]+$/)&&!v.includes('report-head')) poll(current.split('/')[3]);
+        }
+      }).catch(err=>{
+        console.error('[FLIQ] Render error:',err);
+        const el=$('#app');
+        if(el) el.innerHTML=appShell(`<div class="empty"><h2>Unable to load page</h2><p>${esc(err.message)}</p><a href="/dashboard" data-route>Return to dashboard</a></div>`);
+      });
+    }else{
+      $('#app').innerHTML=out;
+      if(current==='/'){ startHeroWalkthrough(); startProductDemo(); }
+    }
+  }catch(renderErr){
+    console.error('[FLIQ] Render exception:',renderErr);
+    const el=$('#app');
+    if(el) el.innerHTML=`<div style="padding:40px;font-family:sans-serif;max-width:600px;margin:auto"><h2>Could not render page</h2><p>${esc(renderErr.message)}</p><p><a href="/">Return to Home</a></p></div>`;
+  }
+}
 function validateInputUrl(raw) {
   const trimmed = String(raw || '').trim();
   if (!trimmed) {
@@ -1666,7 +1916,9 @@ async function triggerPendingScan(targetUrl) {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ url: targetUrl })
     });
-    const j = await r.json();
+    const text = await r.text();
+    let j;
+    try { j = JSON.parse(text); } catch { j = { error: 'Invalid response from server.' }; }
     if (!r.ok) throw new Error(j.error || 'Failed to start scan.');
     modal = false;
     isTestRunning = false;
@@ -1743,7 +1995,9 @@ async function runTest(form){
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ url: validation.url })
     });
-    const j = await r.json();
+    const text = await r.text();
+    let j;
+    try { j = JSON.parse(text); } catch { j = { error: 'Invalid response from server.' }; }
     if (!r.ok) throw new Error(j.error || 'Failed to start scan.');
 
     modal = false;
@@ -1910,6 +2164,10 @@ document.addEventListener('click',async e=>{
   const a=e.target.closest('[data-action]');
   if(a){
     const action=a.dataset.action;
+    if(action==='retry-tests'){
+      render();
+      return;
+    }
     if(action==='regen-ai'){
       const id=a.dataset.id;a.disabled=true;const orig=a.textContent;a.textContent='Generating…';
       try{

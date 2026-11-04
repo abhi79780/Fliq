@@ -41,12 +41,15 @@ const authDomain = process.env.FIREBASE_AUTH_DOMAIN?.trim() || (projectId ? `${p
 const messagingSenderId = process.env.FIREBASE_MESSAGING_SENDER_ID?.trim() || '';
 const appId = process.env.FIREBASE_APP_ID?.trim() || '';
 
+const apiUrl = process.env.FLIQ_BACKEND_URL?.trim() || process.env.FLIQ_API_URL?.trim() || '';
+
 const config = {
   apiKey,
   authDomain,
   projectId,
   messagingSenderId,
-  appId
+  appId,
+  apiUrl
 };
 
 console.log('[FLIQ Build] Preparing client configuration for Netlify deployment...');
@@ -112,6 +115,40 @@ if (fs.existsSync(logoSrc) && !fs.existsSync(logoDest)) {
     console.log('[FLIQ Build] Copied fliq-logo.png to root directory.');
   } catch (copyErr) {
     console.warn('[FLIQ Build] Logo copy notice:', copyErr.message);
+  }
+}
+
+// 6. Ensure data/tests.json and screenshots are co-located with Netlify Functions
+const functionsDir = path.join(root, 'netlify', 'functions');
+if (fs.existsSync(functionsDir)) {
+  const localTestsSrc = path.join(root, 'data', 'tests.json');
+  const localTestsDest = path.join(functionsDir, 'tests.json');
+  if (fs.existsSync(localTestsSrc)) {
+    try {
+      fs.copyFileSync(localTestsSrc, localTestsDest);
+      console.log('[FLIQ Build] Copied data/tests.json to netlify/functions/tests.json');
+    } catch (e) {
+      console.warn('[FLIQ Build] Notice copying tests.json:', e.message);
+    }
+  }
+
+  const funcDataDir = path.join(functionsDir, 'data');
+  if (!fs.existsSync(funcDataDir)) {
+    try { fs.mkdirSync(funcDataDir, { recursive: true }); } catch {}
+  }
+  const rootDataDir = path.join(root, 'data');
+  if (fs.existsSync(rootDataDir)) {
+    try {
+      const files = fs.readdirSync(rootDataDir);
+      for (const f of files) {
+        if (f.endsWith('.png')) {
+          fs.copyFileSync(path.join(rootDataDir, f), path.join(funcDataDir, f));
+        }
+      }
+      console.log('[FLIQ Build] Synced screenshot assets to netlify/functions/data/');
+    } catch (e) {
+      console.warn('[FLIQ Build] Notice syncing screenshot assets:', e.message);
+    }
   }
 }
 

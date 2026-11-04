@@ -154,6 +154,22 @@ async function verifiedUser(req, options = {}) {
   const token = req.headers.authorization?.match(/^Bearer (.+)$/i)?.[1];
   if (!adminApp) {
     if (token) {
+      try {
+        const tokenRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(token)}`);
+        if (tokenRes.ok) {
+          const tData = await tokenRes.json();
+          if (!expectedProjectId || !tData.aud || tData.aud === expectedProjectId) {
+            return {
+              uid: tData.user_id || tData.sub,
+              email: tData.email || '',
+              displayName: tData.name || '',
+              isAnonymous: false
+            };
+          }
+        }
+      } catch (tokenErr) {
+        console.warn('[FLIQ] Tokeninfo verification warning:', tokenErr.message);
+      }
       const projFlag = expectedProjectId ? ` --project=${expectedProjectId}` : '';
       throw Object.assign(new Error(`Firebase Admin credentials are not configured. Run: gcloud auth application-default login${projFlag} then restart the server, or add a service-account key to .env as GOOGLE_APPLICATION_CREDENTIALS=path/to/key.json`), { status: 503 });
     }
@@ -1142,7 +1158,35 @@ const server=http.createServer(async(req,res)=>{
       }catch(e){return send(res,e.status||400,{error:e.message});}
     }
     if(pathname==='/api/tests'&&req.method==='GET'){
-      try{const user=await verifiedUser(req);if(adminApp&&user.uid!=='local'){const col=cloud().collection('tests'),[owned,shared]=await Promise.all([col.where('owner','==',user.uid).limit(100).get(),col.where('sharedWithUids','array-contains',user.uid).limit(100).get()]);const docs=new Map([...owned.docs,...shared.docs].map(d=>[d.id,d.data()]));return send(res,200,[...docs.values()].sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt))).map(({owner,sharedWithUids,...safe})=>safe));}return send(res,200,(await readDB()).filter(t=>t.owner==='local'));}catch(e){return send(res,e.status||401,{error:e.message});}
+      try{
+        const user=await verifiedUser(req);
+        const docs=new Map();
+        if(adminApp&&user.uid!=='local'){
+          try {
+            const col=cloud().collection('tests');
+            const [owned,shared]=await Promise.all([
+              col.where('owner','==',user.uid).limit(100).get(),
+              col.where('sharedWithUids','array-contains',user.uid).limit(100).get()
+            ]);
+            for(const d of [...owned.docs, ...shared.docs]) {
+              docs.set(d.id, d.data());
+            }
+          } catch(fsErr) {
+            console.warn('[FLIQ] Firestore test query warning:', fsErr.message);
+          }
+        }
+        // Always merge existing records from data/tests.json belonging to the user
+        const localTests = await readDB();
+        for(const t of localTests){
+          const isOwner = t.owner === user.uid || (user.uid === 'local' && t.owner === 'local');
+          const isShared = Array.isArray(t.sharedWithUids) && t.sharedWithUids.includes(user.uid);
+          if((isOwner || isShared) && !docs.has(t.id)){
+            docs.set(t.id, t);
+          }
+        }
+        const userTests = [...docs.values()].sort((a,b)=>String(b.createdAt||'').localeCompare(String(a.createdAt||'')));
+        return send(res,200,userTests.map(({owner,sharedWithUids,...safe})=>safe));
+      }catch(e){return send(res,e.status||401,{error:e.message});}
     }
     if(pathname==='/api/tests'&&req.method==='POST'){
       let body='';for await(const c of req){body+=c;if(body.length>2000){res.destroy();return;}}

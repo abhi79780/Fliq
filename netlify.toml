@@ -19,6 +19,17 @@
   command = "npm run build"
   publish = "."
 
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+  included_files = ["data/**", "netlify/functions/**"]
+
+# Serverless API routes (Netlify Functions)
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/api/:splat"
+  status = 200
+
 # Client-side SPA routing (Direct all non-asset page routes to index.html)
 [[redirects]]
   from = "/*"
