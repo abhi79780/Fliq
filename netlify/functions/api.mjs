@@ -140,7 +140,7 @@ export const handler = async (event, context) => {
   }
   const pathname = rawPath;
 
-  const projectId = process.env.FIREBASE_PROJECT_ID?.trim() || 'fliq-61989';
+  const projectId = process.env.FIREBASE_PROJECT_ID?.trim() || process.env.GCLOUD_PROJECT?.trim() || '';
   const apiKey = process.env.FIREBASE_WEB_API_KEY?.trim() || process.env.FIREBASE_API_KEY?.trim() || '';
   const authDomain = process.env.FIREBASE_AUTH_DOMAIN?.trim() || (projectId ? `${projectId}.firebaseapp.com` : '');
   const messagingSenderId = process.env.FIREBASE_MESSAGING_SENDER_ID?.trim() || '';

@@ -357,6 +357,10 @@
 .live-detail-sec span{font-size:8px;font-weight:700;letter-spacing:.05em;color:#7e7871;text-transform:uppercase;display:block;margin-bottom:2px}
 .live-detail-sec p{margin:0;color:#3c3935;line-height:1.45}
 .live-detail-sec code{font-family:monospace;font-size:10px;background:#f4efe9;padding:2px 5px;border-radius:3px;word-break:break-all}
+@keyframes spin{to{transform:rotate(360deg)}}
+.skeleton-row{animation:pulseSkeleton 1.6s ease-in-out infinite}
+@keyframes pulseSkeleton{0%,100%{opacity:0.6}50%{opacity:0.3}}
+
 
 
 
