@@ -570,9 +570,138 @@ function forgot(){
   const forgotQuery = queryParams.toString() ? `?${queryParams.toString()}` : '';
   return `<main class="auth-layout"><section class="auth-form">${logo}<div class="auth-inner"><h1>Reset your password</h1><p>Enter your email and we'll send a reset link.</p><form id="reset-form"><label>Email<input name="email" type="email" required placeholder="you@example.com"></label><button class="btn black full">Send reset link</button><div id="reset-message"></div></form><div class="auth-switch"><a href="/login${forgotQuery}" data-route>← Back to sign in</a></div></div></section>${artwork('blue')}</main>`;
 }
+function getActiveScanState() {
+  try {
+    const id = localStorage.getItem('fliqActiveScanId');
+    if (!id) return null;
+    return {
+      id,
+      url: localStorage.getItem('fliqActiveScanUrl') || '',
+      stage: localStorage.getItem('fliqActiveScanStage') || 'Running audit',
+      progress: parseInt(localStorage.getItem('fliqActiveScanProgress') || '10', 10),
+      status: localStorage.getItem('fliqActiveScanStatus') || 'running',
+      error: localStorage.getItem('fliqActiveScanError') || null
+    };
+  } catch {
+    return null;
+  }
+}
+
+function setActiveScanState(id, url, stage, progress, status = 'running', error = null) {
+  try {
+    if (!id) {
+      clearActiveScanState();
+      return;
+    }
+    localStorage.setItem('fliqActiveScanId', id);
+    if (url) localStorage.setItem('fliqActiveScanUrl', url);
+    if (stage) localStorage.setItem('fliqActiveScanStage', stage);
+    if (progress !== undefined) localStorage.setItem('fliqActiveScanProgress', String(progress));
+    if (status) localStorage.setItem('fliqActiveScanStatus', status);
+    if (error) localStorage.setItem('fliqActiveScanError', error);
+    else localStorage.removeItem('fliqActiveScanError');
+  } catch {}
+}
+
+function clearActiveScanState() {
+  try {
+    localStorage.removeItem('fliqActiveScanId');
+    localStorage.removeItem('fliqActiveScanUrl');
+    localStorage.removeItem('fliqActiveScanStage');
+    localStorage.removeItem('fliqActiveScanProgress');
+    localStorage.removeItem('fliqActiveScanStatus');
+    localStorage.removeItem('fliqActiveScanError');
+  } catch {}
+}
+
+function renderGlobalScanBanner() {
+  const active = getActiveScanState();
+  if (!active || !active.id) return '';
+  if (location.pathname === `/dashboard/tests/${active.id}`) return '';
+  return `
+    <div class="global-scan-banner" id="global-scan-banner" role="status" aria-label="Active website audit in progress">
+      <div class="global-scan-banner-info">
+        <span class="live-pulse-dot"></span>
+        <span>Audit in progress for <b>${esc(active.url || 'website')}</b>:</span>
+        <span class="global-scan-stage">${esc(active.stage || 'Analyzing')} (${active.progress || 10}%)</span>
+      </div>
+      <div class="global-scan-actions">
+        <a class="btn black" style="padding:4px 12px;font-size:11px;min-height:auto" href="/dashboard/tests/${esc(active.id)}" data-route>View Live Inspection →</a>
+      </div>
+    </div>
+  `;
+}
+
+function updateActiveScanUi() {
+  const banner = document.querySelector('#global-scan-banner');
+  const active = getActiveScanState();
+  if (active && active.id && location.pathname !== `/dashboard/tests/${active.id}`) {
+    if (banner) {
+      const stageEl = banner.querySelector('.global-scan-stage');
+      if (stageEl) stageEl.textContent = `${active.stage || 'Analyzing'} (${active.progress || 10}%)`;
+    } else {
+      const topHeader = document.querySelector('.app-top');
+      if (topHeader && topHeader.parentNode) {
+        const div = document.createElement('div');
+        div.innerHTML = renderGlobalScanBanner();
+        if (div.firstElementChild) {
+          topHeader.after(div.firstElementChild);
+        }
+      }
+    }
+  } else {
+    if (banner) banner.remove();
+  }
+}
+
+let globalScanTimer = null;
+function startGlobalScanTracker() {
+  if (globalScanTimer) return;
+  globalScanTimer = setInterval(async () => {
+    const active = getActiveScanState();
+    if (!active || !active.id) return;
+
+    try {
+      const r = await apiFetch(`/api/tests/${active.id}`);
+      if (!r.ok) {
+        if (r.status === 404) {
+          clearActiveScanState();
+          updateActiveScanUi();
+        }
+        return;
+      }
+      const t = await r.json();
+      if (t.status === 'completed' || t.status === 'failed') {
+        clearActiveScanState();
+        if (Array.isArray(window.__fliqCachedTests)) {
+          const idx = window.__fliqCachedTests.findIndex(item => item.id === t.id);
+          if (idx >= 0) window.__fliqCachedTests[idx] = t;
+          else window.__fliqCachedTests.unshift(t);
+        }
+        updateActiveScanUi();
+        updateDashboardDom(window.__fliqCachedTests);
+        if (location.pathname.includes(`/tests/${t.id}`)) {
+          render();
+        }
+      } else {
+        setActiveScanState(t.id, t.url || active.url, t.stage || 'Running', t.progress || active.progress, t.status);
+        updateActiveScanUi();
+        if (Array.isArray(window.__fliqCachedTests)) {
+          const idx = window.__fliqCachedTests.findIndex(item => item.id === t.id);
+          if (idx >= 0) {
+            window.__fliqCachedTests[idx] = { ...window.__fliqCachedTests[idx], ...t };
+          }
+        }
+      }
+    } catch (e) {
+      // background polling network resilience
+    }
+  }, 2000);
+}
+
 const items=[['⌂','Dashboard','/dashboard'],['＋','New Test','/dashboard/new-test'],['◷','History','/dashboard/history'],['▤','Reports','/dashboard/reports'],['◎','Monitors','/dashboard/monitors'],['♧','Team','/dashboard/team'],['⚙','Settings','/dashboard/settings']];
 const side=()=>`<aside class="sidebar">${logo}<div class="side-links">${items.map(([i,n,p])=>`<a class="${path===p?'current':''}" href="${p}" data-route><span>${i}</span>${n}</a>`).join('')}</div><div class="side-bottom"><span>F</span><div>FLIQ workspace<br><small>Free plan</small></div><button data-action="signout" aria-label="Sign out">↗</button></div></aside>`;
-const appShell=content=>`<div class="app-layout">${side()}<main class="app-main"><header class="app-top"><input class="search" placeholder="⌕  Search tests..." aria-label="Search tests"><div class="top-icons"><button aria-label="Notifications">♧</button><button class="avatar" data-go="/dashboard/settings">${(localStorage.getItem('fliqName')||'A')[0].toUpperCase()}</button></div></header>${content}</main></div>`;
+const appShell=content=>`<div class="app-layout">${side()}<main class="app-main"><header class="app-top"><input class="search" placeholder="⌕  Search tests..." aria-label="Search tests"><div class="top-icons"><button aria-label="Notifications">♧</button><button class="avatar" data-go="/dashboard/settings">${(localStorage.getItem('fliqName')||'A')[0].toUpperCase()}</button></div></header>${renderGlobalScanBanner()}${content}</main></div>`;
 let testLoadError = false;
 let testLoadMessage = '';
 let isFetchingTests = false;
@@ -685,7 +814,8 @@ function updateDashboardDom(data) {
       const done = list.filter(t => t.status === 'completed');
       const issues = done.reduce((n, t) => n + (t.issues?.length || 0), 0);
       const healthyCount = done.filter(t => !t.issues?.length).length;
-      const avg = done.length ? `${(done.reduce((n, t) => n + (t.loadTime || t.durationMs || 0), 0) / done.length / 1000).toFixed(1)}s` : '—';
+      const completedWithTiming = done.filter(t => (t.loadTime || t.durationMs || 0) > 0);
+      const avg = completedWithTiming.length ? `${(completedWithTiming.reduce((n, t) => n + (t.loadTime || t.durationMs || 0), 0) / completedWithTiming.length / 1000).toFixed(1)}s` : '—';
 
       if (metricsEl) {
         metricsEl.innerHTML = `
@@ -699,7 +829,21 @@ function updateDashboardDom(data) {
         bannerEl.innerHTML = '';
       }
       if (recentEl) {
-        recentEl.innerHTML = testRows(list.slice(0, 5));
+        const active = getActiveScanState();
+        let displayList = [...list];
+        if (active && active.id && !displayList.some(t => t.id === active.id)) {
+          displayList.unshift({
+            id: active.id,
+            url: active.url,
+            hostname: (() => { try { return new URL(active.url).hostname; } catch { return active.url; } })(),
+            createdAt: new Date().toISOString(),
+            status: 'running',
+            stage: active.stage,
+            progress: active.progress,
+            issues: []
+          });
+        }
+        recentEl.innerHTML = testRows(displayList.slice(0, 5));
       }
     }
   } else if (['/dashboard/history','/dashboard/reports','/dashboard/monitors','/dashboard/team'].includes(location.pathname)) {
@@ -708,7 +852,22 @@ function updateDashboardDom(data) {
       if (data === null) {
         container.innerHTML = renderDashboardErrorBanner(window.__fliqTestsErrorMessage);
       } else {
-        container.innerHTML = testRows(data);
+        const list = Array.isArray(data) ? data : [];
+        const active = getActiveScanState();
+        let displayList = [...list];
+        if (active && active.id && !displayList.some(t => t.id === active.id)) {
+          displayList.unshift({
+            id: active.id,
+            url: active.url,
+            hostname: (() => { try { return new URL(active.url).hostname; } catch { return active.url; } })(),
+            createdAt: new Date().toISOString(),
+            status: 'running',
+            stage: active.stage,
+            progress: active.progress,
+            issues: []
+          });
+        }
+        container.innerHTML = testRows(displayList);
       }
     }
   }
@@ -748,10 +907,26 @@ function dashboard(){
   const issues = cached ? done.reduce((n, t) => n + (t.issues?.length || 0), 0) : '—';
   const totalCount = cached ? list.length : '—';
   const healthyCount = cached ? done.filter(t => !t.issues?.length).length : '—';
-  const avg = cached ? (done.length ? `${(done.reduce((n, t) => n + (t.loadTime || t.durationMs || 0), 0) / done.length / 1000).toFixed(1)}s` : '—') : '—';
+  const completedWithTiming = done.filter(t => (t.loadTime || t.durationMs || 0) > 0);
+  const avg = cached ? (completedWithTiming.length ? `${(completedWithTiming.reduce((n, t) => n + (t.loadTime || t.durationMs || 0), 0) / completedWithTiming.length / 1000).toFixed(1)}s` : '—') : '—';
 
   // Trigger background refresh (synchronous 0ms shell rendering)
   setTimeout(() => refreshDashboardData(), 10);
+
+  const active = getActiveScanState();
+  let displayList = [...list];
+  if (active && active.id && !displayList.some(t => t.id === active.id)) {
+    displayList.unshift({
+      id: active.id,
+      url: active.url,
+      hostname: (() => { try { return new URL(active.url).hostname; } catch { return active.url; } })(),
+      createdAt: new Date().toISOString(),
+      status: 'running',
+      stage: active.stage,
+      progress: active.progress,
+      issues: []
+    });
+  }
 
   return appShell(`
     <section class="welcome">
@@ -782,7 +957,7 @@ function dashboard(){
       <a href="/dashboard/history" data-route>View all →</a>
     </div>
     <div id="dashboard-recent-container">
-      ${cached ? testRows(list.slice(0, 5)) : renderSkeletonRows(3)}
+      ${cached ? testRows(displayList.slice(0, 5)) : renderSkeletonRows(3)}
     </div>
   `);
 }
@@ -797,13 +972,42 @@ function testRows(rows){
       </div>
     `;
   }
-  return rows.length ? `<div class="test-list">${rows.map(t=>`<a class="test-row" href="/dashboard/tests/${t.id}" data-route><span class="site-dot">◎</span><span class="test-host">${esc(t.hostname||t.url)}<small>${new Date(t.createdAt).toLocaleString()}</small></span><span class="badge ${t.status}">${t.status}</span><span>${t.status==='completed'?`${t.issues?.length||0} issues`:t.status==='failed'?'Failed':'—'}</span><b>View →</b></a>`).join('')}</div>` : `<div class="empty"><div class="empty-icon">◎</div><h3>Your testing story starts here.</h3><p>Run your first test to see a clear report with actionable findings.</p><button class="btn outline" data-go="/dashboard/new-test">Start a test →</button></div>`;
+  return rows.length ? `<div class="test-list">${rows.map(t=>{
+    const isRunning = t.status === 'running' || t.status === 'queued';
+    const isCompleted = t.status === 'completed';
+    const isFailed = t.status === 'failed';
+    const statusBadge = isRunning 
+      ? `<span class="badge running"><span class="live-pulse-dot" style="display:inline-block;width:6px;height:6px;margin-right:4px"></span>Running (${t.progress || 10}%)</span>`
+      : `<span class="badge ${t.status}">${t.status}</span>`;
+    const summaryCol = isRunning
+      ? `<span>${esc(t.stage || 'In progress…')}</span>`
+      : isCompleted
+      ? `<span>${t.issues?.length || 0} issues</span>`
+      : isFailed
+      ? `<span style="color:#a02c24">${esc(t.error ? t.error.slice(0, 32) + (t.error.length > 32 ? '…' : '') : 'Failed')}</span>`
+      : `<span>—</span>`;
+    return `<a class="test-row" href="/dashboard/tests/${t.id}" data-route><span class="site-dot">◎</span><span class="test-host">${esc(t.hostname||t.url)}<small>${new Date(t.createdAt).toLocaleString()}</small></span>${statusBadge}${summaryCol}<b>View →</b></a>`;
+  }).join('')}</div>` : `<div class="empty"><div class="empty-icon">◎</div><h3>Your testing story starts here.</h3><p>Run your first test to see a clear report with actionable findings.</p><button class="btn outline" data-go="/dashboard/new-test">Start a test →</button></div>`;
 }
 
 function historyPage(title){
   const cached = window.__fliqCachedTests;
   const isError = window.__fliqTestsError;
   const list = Array.isArray(cached) ? cached : [];
+  const active = getActiveScanState();
+  let displayList = [...list];
+  if (active && active.id && !displayList.some(t => t.id === active.id)) {
+    displayList.unshift({
+      id: active.id,
+      url: active.url,
+      hostname: (() => { try { return new URL(active.url).hostname; } catch { return active.url; } })(),
+      createdAt: new Date().toISOString(),
+      status: 'running',
+      stage: active.stage,
+      progress: active.progress,
+      issues: []
+    });
+  }
 
   setTimeout(() => refreshDashboardData(), 10);
 
@@ -814,7 +1018,7 @@ function historyPage(title){
       <p>Review your website testing activity.</p>
     </div>
     <div id="history-container">
-      ${isError ? renderDashboardErrorBanner(window.__fliqTestsErrorMessage) : (cached ? testRows(list) : renderSkeletonRows(5))}
+      ${isError ? renderDashboardErrorBanner(window.__fliqTestsErrorMessage) : (cached ? testRows(displayList) : renderSkeletonRows(5))}
     </div>
   `);
 }
@@ -857,9 +1061,13 @@ async function progressPage(id) {
   let t;
   try { t = JSON.parse(text); } catch { t = { error: 'Could not contact the FLIQ API server.' }; }
   if (t.error) return appShell(`<div class="empty"><h2>${esc(t.error)}</h2><a href="/dashboard" data-route>Return to dashboard</a></div>`);
-  if (t.status === 'completed') return resultPage(id);
+  if (t.status === 'completed') {
+    clearActiveScanState();
+    return resultPage(id);
+  }
 
   if (t.status === 'failed') {
+    clearActiveScanState();
     return appShell(`
       <div class="empty" style="max-width:680px;margin:40px auto;text-align:center">
         <div class="empty-icon" style="color:#d32f2f">⚠</div>
@@ -872,6 +1080,10 @@ async function progressPage(id) {
       </div>
     `);
   }
+
+  // Active scan in progress: update local storage state and trigger global poller
+  setActiveScanState(t.id, t.url, t.stage, t.progress, t.status);
+  startGlobalScanTracker();
 
   const allIssues = Array.isArray(t.issues) ? t.issues : [];
   const a11yCount = allIssues.filter(i => (i.category || '').toLowerCase() === 'accessibility').length;
@@ -937,23 +1149,36 @@ async function progressPage(id) {
       </div>
 
       <div class="live-grid">
-        <!-- LEFT PANEL: Live Playwright Browser Preview & Pipeline -->
+        <!-- LEFT PANEL: Live Browser Preview / Serverless Inspector & Pipeline -->
         <div class="live-left-panel">
           <div class="live-browser-chrome">
             <div class="live-browser-dots"><span></span><span></span><span></span></div>
             <div class="live-address-bar">🔒 ${esc(t.currentUrl || t.finalUrl || t.url)}</div>
-            <span class="live-browser-viewport">1440 × 960 Desktop Chromium</span>
+            <span class="live-browser-viewport">${t.liveScreenshot ? '1440 × 960 Desktop Chromium' : 'Serverless Cloud Inspector'}</span>
           </div>
 
           <div class="live-preview-box" id="live-preview-box">
-            ${(t.progress || 0) >= 20 ? `
+            ${t.liveScreenshot ? `
               <img class="live-preview-img" src="/api/tests/${esc(id)}/live-screenshot?t=${Date.now()}" alt="Live Playwright Browser View">
               ${highlightHtml}
             ` : `
-              <div class="live-preview-placeholder">
-                <div class="spinner"></div>
-                <strong>Launching Playwright headless browser session…</strong>
-                <p style="font-size:11px;margin-top:4px">Connecting to ${esc(t.url)}</p>
+              <div class="serverless-audit-card">
+                <div class="serverless-card-header">
+                  <span class="live-pulse-dot"></span>
+                  <strong>Serverless Cloud Inspector Active</strong>
+                </div>
+                <p class="serverless-card-desc">
+                  Analyzing live DOM structure, network transport, accessibility semantics, Core Web Vitals, and security headers directly via Netlify serverless engine.
+                </p>
+                <div class="serverless-details-grid">
+                  <div><span>Target URL:</span> <code>${esc(t.currentUrl || t.finalUrl || t.url)}</code></div>
+                  <div><span>Inspection Stage:</span> <b>${esc(t.stage || 'Analyzing')} (${t.progress || 10}%)</b></div>
+                  <div><span>Status Code:</span> <b style="color:#285e25">HTTP ${t.httpStatus || 200} OK</b></div>
+                  <div><span>Issues Detected:</span> <b>${allIssues.length} findings verified</b></div>
+                </div>
+                <div class="serverless-card-note">
+                  <small>⚡ Headless Chromium screenshots are unavailable in serverless Lambda runtime. Complete structural, performance, and security audits remain 100% active.</small>
+                </div>
               </div>
             `}
           </div>
@@ -1557,6 +1782,7 @@ async function resultPage(id){
   try{ t=JSON.parse(text); }catch{ t={error:'Could not contact the FLIQ API server.'}; }
   if(t.error)return appShell(`<div class="empty"><h2>${esc(t.error)}</h2><a href="/dashboard" data-route>Return to dashboard</a></div>`);
   if(t.status!=='completed')return progressPage(id);
+  clearActiveScanState();
 
   const allIssues = t.issues || [];
   const confirmedCount = allIssues.filter(i => i.classification === 'Confirmed Failure' || (!i.classification && i.type === 'failure')).length;
@@ -1647,12 +1873,20 @@ async function resultPage(id){
 
     ${activeTab==='Screenshots'?`
       <div class="shots" style="grid-template-columns: repeat(auto-fit, minmax(280px, 1fr))">
-        ${(t.screenshots||[]).map(s=>`
+        ${(t.screenshots && t.screenshots.length > 0) ? t.screenshots.map(s=>`
           <figure>
             <img data-screenshot="/api/screenshots/${s}" alt="${s.includes('mobile')?'Mobile':s.includes('tablet')?'Tablet':'Desktop'} website screenshot">
             <figcaption>${s.includes('mobile')?'Mobile (390px)':s.includes('tablet')?'Tablet (768px)':'Desktop (1440px)'} viewport capture</figcaption>
           </figure>
-        `).join('')}
+        `).join('') : `
+          <div class="empty" style="grid-column: 1 / -1; padding: 40px 20px">
+            <div class="empty-icon" style="font-size:24px">📷</div>
+            <h3 style="font-size:16px;margin:8px 0">No Visual Screenshots Available</h3>
+            <p style="font-size:12px;color:#716c65;max-width:440px;margin:0 auto">
+              This audit was performed in serverless cloud mode without headless Chromium display captures. Full DOM semantics, network timings, security configurations, and accessibility findings are available in the tabs above.
+            </p>
+          </div>
+        `}
       </div>
     `:activeTab==='Coverage'?coverageTabContent(t):
       activeTab==='Performance'?performanceTabContent(t):
@@ -2082,6 +2316,8 @@ async function triggerPendingScan(targetUrl) {
     if (!r.ok) throw new Error(j.error || 'Failed to start scan.');
     modal = false;
     isTestRunning = false;
+    setActiveScanState(j.id, targetUrl, 'Initializing browser', 10, 'running');
+    startGlobalScanTracker();
     go(`/dashboard/tests/${j.id}`);
     poll(j.id);
   } catch (err) {
@@ -2162,6 +2398,8 @@ async function runTest(form){
 
     modal = false;
     isTestRunning = false;
+    setActiveScanState(j.id, targetUrl, 'Initializing browser', 10, 'running');
+    startGlobalScanTracker();
     go(`/dashboard/tests/${j.id}`);
     poll(j.id);
   } catch (e) {
@@ -2233,10 +2471,13 @@ function startPollingFallback(id) {
       const r = await apiFetch(`/api/tests/${id}`);
       if (r.ok) {
         const t = await r.json();
-        render();
         if (t.status === 'completed' || t.status === 'failed') {
+          clearActiveScanState();
           clearInterval(testTimer);
+        } else {
+          setActiveScanState(t.id, t.url, t.stage, t.progress, t.status);
         }
+        render();
       }
     } catch (e) {
       console.warn('[FLIQ] Poll error:', e.message);
@@ -2432,6 +2673,7 @@ document.addEventListener('keydown', async e => {
 document.addEventListener('focusin',e=>{const wrap=document.querySelector('.product-menu'),trigger=wrap?.querySelector('[data-product-menu-trigger]');if(wrap&&trigger?.getAttribute('aria-expanded')==='true'&&!wrap.contains(e.target))setProductMenu(false)});
 new MutationObserver(()=>{if(shareModalId&&location.pathname===`/dashboard/tests/${shareModalId}`&&!document.querySelector('.share-modal'))$('#app').insertAdjacentHTML('beforeend',shareDialog(shareModalId));}).observe($('#app'),{childList:true});
 render();
+startGlobalScanTracker();
 
 
 

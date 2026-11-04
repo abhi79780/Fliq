@@ -361,6 +361,22 @@
 .skeleton-row{animation:pulseSkeleton 1.6s ease-in-out infinite}
 @keyframes pulseSkeleton{0%,100%{opacity:0.6}50%{opacity:0.3}}
 
+/* Active Persistent Scan Banner */
+.global-scan-banner{display:flex;align-items:center;justify-content:space-between;gap:12px;background:#f3f8ea;border:1px solid #c5db9f;border-left:4px solid #58801d;border-radius:6px;padding:10px 16px;margin:0 0 20px;font-size:12px;color:#283811}
+.global-scan-banner-info{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.global-scan-stage{background:#e7f2cc;padding:2px 8px;border-radius:12px;font-weight:600;font-size:11px;color:#3f5e10}
+
+/* Serverless Cloud Inspector Card in live preview box */
+.serverless-audit-card{padding:28px 22px;color:#d8d2c9;text-align:left;width:100%}
+.serverless-card-header{display:flex;align-items:center;gap:8px;font-size:13px;color:#fff;font-weight:700;margin-bottom:8px}
+.serverless-card-desc{font-size:11px;color:#a8a197;line-height:1.5;margin:0 0 16px}
+.serverless-details-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;background:#24221f;border:1px solid #36322d;border-radius:6px;padding:12px;margin-bottom:14px;font-size:11px}
+@media(max-width:600px){.serverless-details-grid{grid-template-columns:1fr}}
+.serverless-details-grid span{color:#888177;display:block;font-size:9px;text-transform:uppercase;letter-spacing:.05em}
+.serverless-details-grid code{font-family:monospace;color:#a8e7f5;font-size:10px;word-break:break-all}
+.serverless-card-note{font-size:10px;color:#91897f;line-height:1.4}
+
+
 
 
 

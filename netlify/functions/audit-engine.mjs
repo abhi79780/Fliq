@@ -83,13 +83,16 @@ function mapCheckStatus(chk, matchingFindings = []) {
   return 'passed';
 }
 
-export async function runAuditScan(job) {
+export async function runAuditScan(job, onProgressUpdate = null) {
   const testId = job.id;
   const initialUrl = job.url;
 
   const update = async (fields) => {
     try {
       updateTestRecord(testId, fields);
+      if (typeof onProgressUpdate === 'function') {
+        await onProgressUpdate(fields).catch(() => {});
+      }
     } catch (e) {
       console.warn('[Audit Engine] Notice updating test record:', e.message);
     }
@@ -123,10 +126,11 @@ export async function runAuditScan(job) {
     let finalUrl = validatedUrl;
     let responseHeaders = {};
 
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 12000);
+    // 30-second independent timeout for the main document request
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
 
+    try {
       const res = await fetch(validatedUrl, {
         signal: controller.signal,
         headers: {
@@ -135,7 +139,6 @@ export async function runAuditScan(job) {
         },
         redirect: 'follow'
       });
-      clearTimeout(timeout);
 
       ttfbMs = Math.round(performance.now() - t0);
       response = res;
@@ -147,11 +150,15 @@ export async function runAuditScan(job) {
         responseHeaders[k.toLowerCase()] = v;
       }
     } catch (fetchErr) {
-      const duration = Math.round(performance.now() - t0);
+      const isTimeout = fetchErr.name === 'TimeoutError' || fetchErr.name === 'AbortError' || fetchErr.message?.includes('aborted');
+      const errorMsg = isTimeout
+        ? `The website at ${validatedUrl} took longer than 30 seconds to respond. Check if the server is accessible.`
+        : `Could not connect to ${validatedUrl}: ${fetchErr.message}`;
+
       issues.push({
         id: crypto.randomUUID(),
         ruleId: 'func-load-timeout',
-        title: 'Target website did not respond within timeout',
+        title: isTimeout ? 'Target website connection timed out (30s limit)' : 'Target website connection error',
         category: 'Functionality',
         severity: 'high',
         classification: 'Confirmed Failure',
@@ -161,14 +168,14 @@ export async function runAuditScan(job) {
         url: validatedUrl,
         selector: 'Network Request',
         htmlSnippet: '',
-        evidence: `HTTP connection to ${validatedUrl} failed: ${fetchErr.message}`,
-        expectedBehavior: 'The public website should establish a TCP/TLS connection and respond within 12 seconds.',
-        actualBehavior: `Connection failed or timed out: ${fetchErr.message}`,
-        description: 'The serverless crawler could not reach the target server. The destination may be offline, rate limiting, or experiencing DNS failure.',
+        evidence: errorMsg,
+        expectedBehavior: 'The public website should establish a connection and respond within 30 seconds.',
+        actualBehavior: errorMsg,
+        description: 'The serverless crawler could not complete the initial page request within the timeout limit.',
         whyItMatters: 'Unresponsive websites cannot serve visitors or search engine crawlers.',
         wcagCriterion: 'Web Availability Standards',
-        reproductionSteps: `1. Open terminal.\n2. Attempt to curl ${validatedUrl}.\n3. Observe timeout or connection reset.`,
-        recommendedFix: 'Check DNS records, web server status, and firewall rules to ensure the server is online.',
+        reproductionSteps: `1. Open terminal.\n2. Attempt to curl ${validatedUrl}.\n3. Observe latency or connection failure.`,
+        recommendedFix: 'Check DNS records, web server status, and firewall rules to ensure the server is online and responding.',
         confidence: 'high'
       });
 
@@ -176,11 +183,13 @@ export async function runAuditScan(job) {
         status: 'failed',
         progress: 0,
         stage: 'Failed',
-        error: `Could not reach ${validatedUrl}: ${fetchErr.message}`,
+        error: errorMsg,
         completedAt: new Date().toISOString(),
         issues
       });
       return;
+    } finally {
+      clearTimeout(timeout);
     }
 
     const httpStatus = response?.status || 0;
@@ -216,6 +225,7 @@ export async function runAuditScan(job) {
       stage: 'Auditing security',
       currentUrl: finalUrl,
       httpStatus,
+      loadTime,
       issues: [...issues]
     });
 
@@ -277,7 +287,6 @@ export async function runAuditScan(job) {
       issues: [...issues]
     });
 
-    // Parse HTML metadata
     const titleMatch = html.match(/<title[^>]*>([^<]*)<\/title>/i);
     const title = titleMatch ? titleMatch[1].trim() : '';
     const metaDescMatch = html.match(/<meta\s+[^>]*name=["']description["'][^>]*content=["']([^"']*)["']/i) ||
@@ -496,7 +505,6 @@ export async function runAuditScan(job) {
       issues: [...issues]
     });
 
-    // Parse image elements
     const imgMatches = [...html.matchAll(/<img\s+([^>]*?)>/gi)];
     let missingAltCount = 0;
     for (const match of imgMatches) {
@@ -532,7 +540,6 @@ export async function runAuditScan(job) {
       });
     }
 
-    // Parse button elements
     const buttonMatches = [...html.matchAll(/<button[^>]*>([\s\S]*?)<\/button>/gi)];
     let emptyButtonCount = 0;
     for (const match of buttonMatches) {
@@ -568,7 +575,6 @@ export async function runAuditScan(job) {
       });
     }
 
-    // Check html lang attribute
     const htmlTagMatch = html.match(/<html[^>]*>/i);
     const hasLang = htmlTagMatch && /\blang\s*=\s*["'][^"']+["']/i.test(htmlTagMatch[0]);
     if (!hasLang) {
@@ -596,7 +602,6 @@ export async function runAuditScan(job) {
       });
     }
 
-    // Check viewport scaling restriction
     const hasScaleLock = /user-scalable\s*=\s*no/i.test(viewportContent) || /maximum-scale\s*=\s*1\b/i.test(viewportContent);
     if (hasScaleLock) {
       issues.push({
@@ -623,8 +628,6 @@ export async function runAuditScan(job) {
       });
     }
 
-    // Map A11Y_CHECKS accurately:
-    // Distinguish real HTML checks from browser-rendered checks that cannot be performed in HTTP/HTML mode
     const accessibilityReport = {
       testedUrl: finalUrl,
       scannedAt: new Date().toISOString(),
@@ -649,7 +652,6 @@ export async function runAuditScan(job) {
           status = hasScaleLock ? 'confirmed_failure' : 'passed';
           summary = hasScaleLock ? 'Viewport restricts user pinch-to-zoom.' : 'User scaling is supported.';
         } else if (['keyboard-nav', 'focus-visible', 'color-contrast', 'interactive-aria-hidden', 'duplicate-ids', 'landmark-structure', 'heading-hierarchy', 'input-label', 'link-name'].includes(chk.id)) {
-          // Explicitly mark browser-only checks as not_tested (never as passed)
           status = 'not_tested';
           summary = `${chk.summary} (Requires live browser layout/DOM rendering engine; not tested in serverless HTTP/HTML mode)`;
         } else if (chk.type === 'manual') {
@@ -667,7 +669,6 @@ export async function runAuditScan(job) {
       issues: [...issues]
     });
 
-    // Extract same-origin links to test for broken references
     const linkMatches = [...html.matchAll(/<a\s+[^>]*href=["']([^"']*)["'][^>]*>/gi)];
     const origin = new URL(finalUrl).origin;
     const sameOriginLinks = new Set();
@@ -689,11 +690,14 @@ export async function runAuditScan(job) {
     for (const testHref of testLinks) {
       try {
         const linkRes = await fetch(testHref, {
-          method: 'HEAD',
-          headers: { 'User-Agent': 'FLIQ-Audit-Bot/1.0 (+https://fliq.dev)' },
-          signal: AbortSignal.timeout(3000)
+          method: 'GET',
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (compatible; FLIQBot/2.0; +https://fliq.dev)',
+            'Range': 'bytes=0-1024'
+          },
+          signal: AbortSignal.timeout(4000)
         });
-        if (linkRes.status >= 400) {
+        if (linkRes.status >= 400 && linkRes.status !== 405) {
           brokenLinksList.push({ url: testHref, status: linkRes.status });
         }
       } catch {}
@@ -724,7 +728,6 @@ export async function runAuditScan(job) {
       });
     }
 
-    // Forms passive check
     const formCount = (html.match(/<form[^>]*>/gi) || []).length;
     const functionalityReport = {
       formsCount: formCount,
@@ -743,7 +746,6 @@ export async function runAuditScan(job) {
           status = 'not_tested';
           summary = `Discovered ${formCount} form(s). Passive non-destructive policy: forms not submitted.`;
         } else {
-          // Browser-only checks marked as not_tested
           status = 'not_tested';
           summary = `${chk.summary} (Requires headless browser JavaScript execution; not tested in serverless HTTP/HTML mode)`;
         }
@@ -799,7 +801,6 @@ export async function runAuditScan(job) {
           status = loadTime <= 3000 ? 'passed' : 'potential_issue';
           summary = `Document transfer completed in ${loadTime}ms`;
         } else {
-          // Explicitly mark field/browser lab metrics as unavailable
           status = 'unavailable';
           summary = `${chk.summary} (Requires browser rendering pipeline; unavailable in serverless HTTP/HTML mode)`;
         }
@@ -874,7 +875,8 @@ export async function runAuditScan(job) {
       pagesDiscovered: sameOriginLinks.size,
       pagesInspected: 1,
       pagesSkipped: Math.max(0, sameOriginLinks.size - 1),
-      screenshots: []
+      screenshots: [],
+      liveScreenshot: null
     });
 
     console.log(`[Audit Engine] Completed real audit for ${finalUrl} (Score: ${score}, Findings: ${finalIssues.length})`);

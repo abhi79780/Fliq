@@ -397,25 +397,75 @@ async function processApiRequest({ method, pathname, headers, body }) {
     saveTestRecord(newJob);
 
     // Trigger background execution:
-    // 1. Dispatch to Netlify Background Function if site URL is known
-    const siteUrl = process.env.URL || (headers?.host ? `https://${headers.host}` : '');
-    if (siteUrl && !siteUrl.includes('localhost')) {
-      fetch(`${siteUrl}/.netlify/functions/scan-background`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ testId: newJob.id, url: newJob.url, owner: user.uid })
-      }).catch(bgErr => console.warn('[api.mjs] Background dispatch notice:', bgErr.message));
+    // Netlify Background Functions run asynchronously in an isolated 15-minute worker.
+    const host = headers?.['x-forwarded-host'] || headers?.host || headers?.Host || '';
+    const proto = headers?.['x-forwarded-proto'] || 'https';
+    const siteUrl = host ? `${proto}://${host}` : (process.env.URL || '');
+
+    let dispatchedToBackground = false;
+    if (siteUrl && !siteUrl.includes('localhost') && !siteUrl.includes('127.0.0.1')) {
+      try {
+        const bgEndpoint = `${siteUrl}/.netlify/functions/scan-background`;
+        const callbackUrl = `${siteUrl}/api/internal/test-update`;
+        const bgRes = await fetch(bgEndpoint, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            testId: newJob.id,
+            url: newJob.url,
+            owner: user.uid,
+            callbackUrl
+          }),
+          signal: AbortSignal.timeout(4000)
+        });
+        if (bgRes.status === 202 || bgRes.ok) {
+          dispatchedToBackground = true;
+          console.log(`[api.mjs] Dispatched test ${newJob.id} to Netlify Background Function.`);
+        }
+      } catch (bgErr) {
+        console.warn('[api.mjs] Background dispatch notice:', bgErr.message);
+      }
     }
 
-    // 2. Also run the audit engine asynchronously directly in the process
-    runAuditScan(newJob).catch(scanErr => {
-      console.error('[api.mjs] Asynchronous scan exception:', scanErr.message);
-    });
+    // In local testing or environments where Netlify Background Functions are not present:
+    if (!dispatchedToBackground && (process.env.NODE_ENV === 'test' || !siteUrl || siteUrl.includes('localhost'))) {
+      await runAuditScan(newJob);
+    }
 
     return {
       status: 202,
       headers: defaultHeaders,
       body: JSON.stringify(newJob)
+    };
+  }
+
+  // 6. Internal update endpoint called by scan-background to sync progress & results
+  if ((pathname === '/api/internal/test-update' || pathname === '/internal/test-update') && method === 'POST') {
+    try {
+      const secret = headers?.['x-fliq-internal-secret'] || headers?.['X-FLIQ-INTERNAL-SECRET'] || '';
+      const expected = process.env.FLIQ_INTERNAL_SECRET || 'fliq-internal-secret-2026';
+      if (secret !== expected) {
+        return { status: 403, headers: defaultHeaders, body: JSON.stringify({ error: 'Unauthorized internal call.' }) };
+      }
+      const payload = typeof body === 'string' ? JSON.parse(body) : (body || {});
+      const { testId, fields } = payload;
+      if (testId && fields) {
+        updateTestRecord(testId, fields);
+        return { status: 200, headers: defaultHeaders, body: JSON.stringify({ ok: true }) };
+      }
+      return { status: 400, headers: defaultHeaders, body: JSON.stringify({ error: 'Missing testId or fields.' }) };
+    } catch (e) {
+      return { status: 500, headers: defaultHeaders, body: JSON.stringify({ error: e.message }) };
+    }
+  }
+
+  // 7. Live screenshot endpoint for in-progress tests
+  const liveScreenshotMatch = pathname.match(/^(?:\/api)?\/tests\/([\w-]+)\/live-screenshot$/);
+  if (liveScreenshotMatch && method === 'GET') {
+    return {
+      status: 404,
+      headers: defaultHeaders,
+      body: JSON.stringify({ error: 'Live screenshot unavailable in serverless mode.' })
     };
   }
 

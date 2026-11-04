@@ -1,5 +1,5 @@
 import { runAuditScan } from './audit-engine.mjs';
-import { getTestById } from './storage.mjs';
+import { getTestById, updateTestRecord } from './storage.mjs';
 
 /**
  * Netlify Background Function: scan-background.mjs
@@ -17,7 +17,7 @@ export const handler = async (event, context) => {
       payload = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
     }
 
-    const { testId, url, owner } = payload;
+    const { testId, url, owner, callbackUrl } = payload;
     if (!testId || !url) {
       console.warn('[scan-background] Background invocation missing required testId or url payload.');
       return;
@@ -25,8 +25,31 @@ export const handler = async (event, context) => {
 
     console.log(`[scan-background] Starting background audit for test ${testId} (${url})...`);
     const job = getTestById(testId) || { id: testId, url, owner };
-    await runAuditScan(job);
-    console.log(`[scan-background] Background audit finished for test ${testId}.`);
+
+    // Run audit with progress callback to sync with api.mjs
+    await runAuditScan(job, async (fields) => {
+      // 1. Update local storage in this background worker container
+      updateTestRecord(testId, fields);
+
+      // 2. Forward updates to api.mjs so polling clients see real-time progress
+      if (callbackUrl) {
+        try {
+          await fetch(callbackUrl, {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              'x-fliq-internal-secret': process.env.FLIQ_INTERNAL_SECRET || 'fliq-internal-secret-2026'
+            },
+            body: JSON.stringify({ testId, fields }),
+            signal: AbortSignal.timeout(4000)
+          });
+        } catch (callErr) {
+          // Non-fatal if callback fails momentarily
+        }
+      }
+    });
+
+    console.log(`[scan-background] Background audit completed for test ${testId}.`);
   } catch (err) {
     console.error('[scan-background] Execution exception in background task:', err);
   }
