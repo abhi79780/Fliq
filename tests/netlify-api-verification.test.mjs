@@ -366,4 +366,50 @@ describe('Netlify Serverless Function (netlify/functions/api.mjs) Verification',
     });
     assert.equal(getRes.statusCode, 403);
   });
+
+  test('POST /api/tests with invalid scheme or invalid format returns HTTP 400', async () => {
+    const ownerToken = createSignedFirebaseToken({ uid: targetOwnerUid });
+    const resFtp = await handler({
+      httpMethod: 'POST',
+      path: '/api/tests',
+      headers: { authorization: `Bearer ${ownerToken}` },
+      body: JSON.stringify({ url: 'ftp://ftp.example.com' })
+    });
+    assert.equal(resFtp.statusCode, 400);
+
+    const resEmpty = await handler({
+      httpMethod: 'POST',
+      path: '/api/tests',
+      headers: { authorization: `Bearer ${ownerToken}` },
+      body: JSON.stringify({ url: '   ' })
+    });
+    assert.equal(resEmpty.statusCode, 400);
+  });
+
+  test('GET /api/tests includes newly created scan in user test history', async () => {
+    const ownerUid = 'history-test-owner-' + Date.now();
+    const ownerToken = createSignedFirebaseToken({ uid: ownerUid });
+
+    const postRes = await handler({
+      httpMethod: 'POST',
+      path: '/api/tests',
+      headers: { authorization: `Bearer ${ownerToken}` },
+      body: JSON.stringify({ url: 'https://mysite.example.org' })
+    });
+    assert.equal(postRes.statusCode, 202);
+    const createdJob = JSON.parse(postRes.body);
+
+    const listRes = await handler({
+      httpMethod: 'GET',
+      path: '/api/tests',
+      headers: { authorization: `Bearer ${ownerToken}` }
+    });
+    assert.equal(listRes.statusCode, 200);
+    const list = JSON.parse(listRes.body);
+    assert.ok(Array.isArray(list));
+    const found = list.find(t => t.id === createdJob.id);
+    assert.ok(found, 'Created scan must appear in GET /api/tests history');
+    assert.equal(found.url, 'https://mysite.example.org');
+    assert.equal(found.owner, ownerUid);
+  });
 });

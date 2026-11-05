@@ -1,5 +1,6 @@
 const $=s=>document.querySelector(s), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let path=location.pathname, modal=false, period='Monthly', activeTab='Issues', issueFilter='all', testTimer, shareModalId=null, shareRecipients=[], shareMessage='';
+let logoutConfirmOpen = false, isLoggingOut = false, logoutError = '';
 let productMenuCloseTimer=0;
 let firebaseConfigured=false, firebaseWebConfigured=false, firebaseAdminConfigured=false, firebaseWebMissing=[];let firebaseAuth=null,firebaseAuthSdk=null,firebaseClientPromise=null;let firebaseStatusPromise;
 let authStateResolved=false, resolvedAuthUser=null, authStateSubscribers=[];
@@ -267,13 +268,59 @@ async function navigatePostAuth() {
   go('/dashboard');
 }
 
+async function executeSignOut() {
+  if (isLoggingOut) return;
+  isLoggingOut = true;
+  logoutError = '';
+  render();
+
+  try {
+    let auth = firebaseAuth;
+    let sdk = firebaseAuthSdk;
+    if ((!auth || !sdk) && firebaseWebConfigured) {
+      try {
+        const client = await initializeFirebaseClient();
+        auth = client.auth;
+        sdk = client.sdk;
+      } catch (initErr) {
+        console.warn('[FLIQ] Firebase init during sign-out notice:', initErr);
+      }
+    }
+    if (auth && sdk) {
+      await sdk.signOut(auth);
+    }
+    window.__fliqSignOutCalls = (window.__fliqSignOutCalls || 0) + 1;
+    for (const k of ['fliqName', 'fliqEmail', 'fliqToken', 'fliqRefresh', 'fliqTestUid', 'fliqUid']) {
+      localStorage.removeItem(k);
+    }
+    try {
+      sessionStorage.removeItem('fliqPendingUrl');
+      sessionStorage.removeItem('fliqPendingPlan');
+      sessionStorage.removeItem('fliqPendingPeriod');
+      sessionStorage.removeItem('fliqSelectedPlan');
+      sessionStorage.removeItem('fliqSelectedPeriod');
+    } catch {}
+    resolvedAuthUser = null;
+    logoutConfirmOpen = false;
+    isLoggingOut = false;
+    logoutError = '';
+    go('/login');
+  } catch (err) {
+    console.error('[FLIQ] Sign-out failure:', err);
+    isLoggingOut = false;
+    logoutError = err?.message || 'Failed to sign out. Please try again.';
+    render();
+  }
+}
+
 window.fliqAuth={
   getResolvedAuthState,
   logoNavigate,
   isAuthStateResolved:()=>authStateResolved,
   getResolvedUser:()=>resolvedAuthUser,
   handlePlanSelect,
-  navigatePostAuth
+  navigatePostAuth,
+  signOut: executeSignOut
 };
 function friendlyFirebaseAuthError(error){const messages={'auth/popup-closed-by-user':'The sign-in window was closed before finishing.','auth/popup-blocked':'Your browser blocked the sign-in window. Allow popups for this site and try again.','auth/unauthorized-domain':'This local host is not authorized in Firebase Authentication. Add it to Firebase Authentication → Settings → Authorized domains.','auth/operation-not-allowed':'This sign-in method is not enabled in Firebase Authentication.','auth/account-exists-with-different-credential':'An account with this email already uses another sign-in method. Sign in with that method first.','auth/email-already-in-use':'An account already exists for this email. Sign in instead.','auth/invalid-email':'Enter a valid email address.','auth/weak-password':'Choose a stronger password (at least 6 characters).','auth/invalid-credential':'Email or password is incorrect.','auth/invalid-login-credentials':'Email or password is incorrect.','auth/user-disabled':'This account is disabled.','auth/too-many-requests':'Too many attempts. Wait a little and try again.','auth/network-request-failed':'Could not reach Firebase. Check your connection and try again.','auth/invalid-api-key':'The Firebase Web API key is invalid. Check the Web App configuration in .env.'};return messages[error?.code]||'Firebase could not complete the request. Check your details and try again.'}
 async function signInWithOAuth(button){const message=document.querySelector('#oauth-message'),buttons=[...document.querySelectorAll('[data-oauth]')];if(!message)return;buttons.forEach(x=>x.disabled=true);message.textContent='Connecting to Google…';try{await firebaseStatusPromise;if(!firebaseWebConfigured)throw Error('Firebase Web Authentication is not ready. Missing: '+(firebaseWebMissing.join(', ')||'Web App configuration')+'.');
@@ -324,6 +371,8 @@ const go=p=>{
   }
   clearInterval(testTimer);
   shareModalId=null;
+  logoutConfirmOpen=false;
+  logoutError='';
   history.pushState({},'',p);
   path=p;
   render();
@@ -499,6 +548,439 @@ function pricing() {
     return `<article class="plan ${isCreator ? 'featured' : ''}">${isCreator ? '<b class="popular">✓</b>' : ''}<h3>${esc(p.name)}</h3><p>${esc(p.desc)}</p><div class="price">${displayedPrice}<small> / ${displayedUnit}</small></div>${subtext}<ul>${p.items.map(i => `<li>✓ &nbsp;${esc(i)}</li>`).join('')}</ul>${btn('Get started', '/signup', `btn ${isCreator ? 'black' : 'outline'} full`, `data-plan-select="${esc(p.name.toLowerCase())}" data-plan-name="${esc(p.name)}"`)}</article>`;
   }).join('')}</div><p class="fine-print">Simple pricing. No hidden fees. Upgrade or cancel anytime.</p></main>${footer()}`;
 }
+let authCarouselTimer = null;
+let authCarouselIndex = 0;
+let authCarouselPaused = false;
+
+function stopAuthCarousel() {
+  if (authCarouselTimer) {
+    clearInterval(authCarouselTimer);
+    authCarouselTimer = null;
+  }
+}
+
+function setAuthCarouselSlide(index) {
+  const root = document.querySelector('[data-auth-carousel]');
+  if (!root) return;
+  authCarouselIndex = index;
+  const track = root.querySelector('.auth-carousel-track');
+  if (track) {
+    track.style.transform = `translateX(-${index * 100}%)`;
+  }
+  const dots = root.querySelectorAll('[data-carousel-dot]');
+  dots.forEach((dot, i) => {
+    const isActive = i === index;
+    dot.classList.toggle('active', isActive);
+    dot.setAttribute('aria-selected', String(isActive));
+  });
+}
+
+function resetAuthCarouselTimer() {
+  stopAuthCarousel();
+  const prefersReduced = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
+  if (prefersReduced) return;
+  authCarouselTimer = setInterval(() => {
+    if (!authCarouselPaused) {
+      const next = (authCarouselIndex + 1) % 3;
+      setAuthCarouselSlide(next);
+    }
+  }, 4000);
+}
+
+function initAuthCarousel() {
+  stopAuthCarousel();
+  const root = document.querySelector('[data-auth-carousel]');
+  if (!root) return;
+  authCarouselIndex = 0;
+  authCarouselPaused = false;
+  setAuthCarouselSlide(0);
+
+  root.onmouseenter = () => { authCarouselPaused = true; };
+  root.onmouseleave = () => { authCarouselPaused = false; };
+
+  resetAuthCarouselTimer();
+}
+
+function authIllustrationPanel() {
+  return `<aside class="auth-visual-column" data-auth-carousel aria-label="FLIQ Highlights">
+    <div class="auth-carousel-viewport">
+      <div class="auth-carousel-track">
+        <!-- ==================== SLIDE 1: WEBSITE TESTING ==================== -->
+        <div class="auth-carousel-slide" data-slide-index="0">
+          <div class="auth-illustration-wrap">
+            <svg class="auth-illustration-svg" viewBox="0 0 520 400" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <filter id="card-subtle-shadow-1" x="-8%" y="-8%" width="120%" height="125%" filterUnits="userSpaceOnUse">
+                  <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#142818" flood-opacity="0.06"/>
+                </filter>
+              </defs>
+
+              <!-- Floor shadow under character -->
+              <ellipse cx="265" cy="355" rx="135" ry="20" fill="#dbeadc"/>
+
+              <!-- Connector dashed curve: Website Card to Shield -->
+              <path d="M 188 126 C 218 106 242 102 254 106" stroke="#1f2421" stroke-width="1.6" stroke-dasharray="3.5 3.5" stroke-linecap="round"/>
+
+              <!-- Connector dashed curve: Shield to Performance Card -->
+              <path d="M 288 106 C 304 102 328 108 350 126" stroke="#1f2421" stroke-width="1.6" stroke-dasharray="3.5 3.5" stroke-linecap="round"/>
+
+              <!-- Connector dashed curve: Performance Card to Bar Chart -->
+              <path d="M 426 195 C 435 218 430 236 438 250" stroke="#1f2421" stroke-width="1.6" stroke-dasharray="3.5 3.5" stroke-linecap="round"/>
+
+              <!-- Floating Card 1: Top-Left Website Preview (Tilted) -->
+              <g transform="rotate(-6 105 140)" filter="url(#card-subtle-shadow-1)">
+                <rect x="35" y="88" width="144" height="96" rx="12" fill="#ffffff" stroke="#1f2421" stroke-width="1.6"/>
+                <circle cx="49" cy="101" r="2.8" fill="#22c55e"/>
+                <circle cx="58" cy="101" r="2.8" fill="#cbd5e1"/>
+                <circle cx="67" cy="101" r="2.8" fill="#cbd5e1"/>
+                <rect x="47" y="112" width="48" height="38" rx="6" fill="#f1f5f9"/>
+                <circle cx="80" cy="122" r="4.5" fill="#e2e8f0"/>
+                <path d="M 47 142 L 59 128 L 74 144 L 81 137 L 95 150 L 47 150 Z" fill="#cbd5e1"/>
+                <rect x="103" y="116" width="64" height="6" rx="3" fill="#e2e8f0"/>
+                <rect x="103" y="127" width="48" height="6" rx="3" fill="#e2e8f0"/>
+                <rect x="103" y="138" width="56" height="6" rx="3" fill="#e2e8f0"/>
+                <rect x="47" y="158" width="120" height="5" rx="2.5" fill="#e2e8f0"/>
+                <rect x="47" y="167" width="85" height="5" rx="2.5" fill="#e2e8f0"/>
+              </g>
+
+              <!-- Floating Badge: Top-Center Shield with Checkmark -->
+              <g filter="url(#card-subtle-shadow-1)">
+                <path d="M 256 88 C 256 88 271 85 271 85 C 271 85 286 88 286 88 C 286 102 281 118 271 125 C 261 118 256 102 256 88 Z" fill="#ffffff" stroke="#1f2421" stroke-width="1.6"/>
+                <circle cx="271" cy="104" r="7.5" fill="#dcfce7"/>
+                <path d="M 268 104 L 270.5 106.5 L 274.5 101" stroke="#16a34a" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+              </g>
+
+              <!-- Floating Card 2: Top-Right Performance Score (Tilted) -->
+              <g transform="rotate(6 422 145)" filter="url(#card-subtle-shadow-1)">
+                <rect x="352" y="94" width="124" height="95" rx="12" fill="#ffffff" stroke="#1f2421" stroke-width="1.6"/>
+                <text x="414" y="115" text-anchor="middle" font-family="'DM Sans',sans-serif" font-size="10.5" font-weight="600" fill="#1f2421">Performance</text>
+                <path d="M 386 153 A 28 28 0 0 1 442 153" fill="none" stroke="#e5e7eb" stroke-width="5" stroke-linecap="round"/>
+                <path d="M 386 153 A 28 28 0 0 1 438 136" fill="none" stroke="#22c55e" stroke-width="5" stroke-linecap="round"/>
+                <text x="414" y="149" text-anchor="middle" font-family="'DM Sans',sans-serif" font-size="19" font-weight="800" fill="#1f2421">92</text>
+                <text x="414" y="162" text-anchor="middle" font-family="'DM Sans',sans-serif" font-size="9" font-weight="500" fill="#64748b">/100</text>
+              </g>
+
+              <!-- Stack of 3 Feature Badges on Left -->
+              <g filter="url(#card-subtle-shadow-1)">
+                <rect x="25" y="218" width="134" height="28" rx="8" fill="#ffffff" stroke="#1f2421" stroke-width="1.6"/>
+                <g transform="translate(35, 224)" stroke="#1f2421" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none">
+                  <circle cx="7.5" cy="2.5" r="1.5" fill="#1f2421"/>
+                  <path d="M 7.5 5.5 V 10.5 H 11.5 L 13 14"/>
+                  <path d="M 4 8.5 A 4 4 0 1 0 8 12.5"/>
+                </g>
+                <text x="56" y="236" font-family="'DM Sans',sans-serif" font-size="10" font-weight="600" fill="#1f2421">Accessibility</text>
+                <circle cx="145" cy="232" r="6.5" fill="#dcfce7"/>
+                <path d="M 142.5 232 L 144.5 234 L 148 229.5" stroke="#16a34a" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+              </g>
+
+              <g filter="url(#card-subtle-shadow-1)">
+                <rect x="25" y="254" width="134" height="28" rx="8" fill="#ffffff" stroke="#1f2421" stroke-width="1.6"/>
+                <g transform="translate(35, 260)" stroke="#1f2421" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none">
+                  <path d="M 3 3 C 3 3 7.5 1.5 7.5 1.5 C 7.5 1.5 12 3 12 3 C 12 7.5 10 11.5 7.5 13.5 C 5 11.5 3 7.5 3 3 Z"/>
+                </g>
+                <text x="56" y="272" font-family="'DM Sans',sans-serif" font-size="10" font-weight="600" fill="#1f2421">Security</text>
+                <circle cx="145" cy="268" r="6.5" fill="#dcfce7"/>
+                <path d="M 142.5 268 L 144.5 270 L 148 265.5" stroke="#16a34a" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+              </g>
+
+              <g filter="url(#card-subtle-shadow-1)">
+                <rect x="25" y="290" width="134" height="28" rx="8" fill="#ffffff" stroke="#1f2421" stroke-width="1.6"/>
+                <g transform="translate(36, 296)" stroke="#1f2421" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none">
+                  <circle cx="5.5" cy="5.5" r="4"/>
+                  <line x1="8.5" y1="8.5" x2="12" y2="12"/>
+                </g>
+                <text x="56" y="308" font-family="'DM Sans',sans-serif" font-size="10" font-weight="600" fill="#1f2421">SEO</text>
+                <circle cx="145" cy="304" r="6.5" fill="#dcfce7"/>
+                <path d="M 142.5 304 L 144.5 306 L 148 301.5" stroke="#16a34a" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+              </g>
+
+              <!-- Floating Card 3: Middle-Right Mini Bar Chart -->
+              <g filter="url(#card-subtle-shadow-1)">
+                <rect x="424" y="244" width="66" height="52" rx="10" fill="#ffffff" stroke="#1f2421" stroke-width="1.6"/>
+                <rect x="439" y="270" width="7" height="15" rx="3.5" fill="#86efac"/>
+                <rect x="453" y="260" width="7" height="25" rx="3.5" fill="#4ade80"/>
+                <rect x="467" y="251" width="7" height="34" rx="3.5" fill="#22c55e"/>
+              </g>
+
+              <!-- Main Character: Sitting Cross-Legged with Laptop -->
+              <g>
+                <!-- Left Shoe -->
+                <g>
+                  <path d="M 200 342 C 190 342 178 346 178 355 C 178 362 188 365 210 365 C 230 365 238 358 238 351 C 238 344 220 342 200 342 Z" fill="#ffffff" stroke="#1f2421" stroke-width="1.6"/>
+                  <path d="M 180 359 Q 206 363 236 357" stroke="#1f2421" stroke-width="1.4" fill="none"/>
+                  <line x1="192" y1="351" x2="192" y2="358" stroke="#1f2421" stroke-width="1.2"/>
+                  <line x1="198" y1="351" x2="198" y2="359" stroke="#1f2421" stroke-width="1.2"/>
+                  <line x1="204" y1="351" x2="204" y2="359" stroke="#1f2421" stroke-width="1.2"/>
+                  <line x1="210" y1="351" x2="210" y2="359" stroke="#1f2421" stroke-width="1.2"/>
+                </g>
+
+                <!-- Right Shoe -->
+                <g>
+                  <path d="M 332 342 C 342 342 354 346 354 355 C 354 362 344 365 322 365 C 302 365 294 358 294 351 C 294 344 312 342 332 342 Z" fill="#ffffff" stroke="#1f2421" stroke-width="1.6"/>
+                  <path d="M 352 359 Q 326 363 296 357" stroke="#1f2421" stroke-width="1.4" fill="none"/>
+                  <line x1="340" y1="351" x2="340" y2="358" stroke="#1f2421" stroke-width="1.2"/>
+                  <line x1="334" y1="351" x2="334" y2="359" stroke="#1f2421" stroke-width="1.2"/>
+                  <line x1="328" y1="351" x2="328" y2="359" stroke="#1f2421" stroke-width="1.2"/>
+                  <line x1="322" y1="351" x2="322" y2="359" stroke="#1f2421" stroke-width="1.2"/>
+                </g>
+
+                <!-- Legs & Pants -->
+                <path d="M 230 305 C 190 305 168 322 172 342 C 176 355 198 355 236 345 C 255 340 262 328 262 320 Z" fill="#212624" stroke="#1f2421" stroke-width="1.6"/>
+                <path d="M 300 305 C 340 305 362 322 358 342 C 354 355 332 355 294 345 C 275 340 268 328 268 320 Z" fill="#212624" stroke="#1f2421" stroke-width="1.6"/>
+                <path d="M 262 320 L 268 320" stroke="#1f2421" stroke-width="1.4"/>
+
+                <!-- Green Hoodie Body -->
+                <path d="M 226 235 C 226 220 236 214 265 214 C 294 214 304 220 304 235 L 308 302 C 308 312 296 316 265 316 C 234 316 222 312 222 302 Z" fill="#78cb7a" stroke="#1f2421" stroke-width="1.6"/>
+
+                <!-- Left Arm -->
+                <path d="M 228 238 C 214 252 204 274 218 296 C 226 308 244 300 248 292 L 238 274 Z" fill="#78cb7a" stroke="#1f2421" stroke-width="1.6"/>
+
+                <!-- Right Arm -->
+                <path d="M 302 238 C 316 252 326 274 312 296 C 304 308 286 300 282 292 L 292 274 Z" fill="#78cb7a" stroke="#1f2421" stroke-width="1.6"/>
+
+                <!-- White Collar -->
+                <path d="M 252 216 Q 265 228 278 216 Q 265 222 252 216 Z" fill="#ffffff" stroke="#1f2421" stroke-width="1.4"/>
+
+                <!-- Drawstrings -->
+                <path d="M 258 222 V 242" stroke="#ffffff" stroke-width="2" stroke-linecap="round"/>
+                <circle cx="258" cy="243" r="1.5" fill="#ffffff"/>
+                <path d="M 272 222 V 242" stroke="#ffffff" stroke-width="2" stroke-linecap="round"/>
+                <circle cx="272" cy="243" r="1.5" fill="#ffffff"/>
+
+                <!-- Neck -->
+                <path d="M 258 206 H 272 V 218 H 258 Z" fill="#fcdbc7" stroke="#1f2421" stroke-width="1.4"/>
+
+                <!-- Head -->
+                <path d="M 252 178 C 252 165 258 152 265 152 C 272 152 278 165 278 178 C 278 194 274 206 265 206 C 256 206 252 194 252 178 Z" fill="#fcdbc7" stroke="#1f2421" stroke-width="1.6"/>
+
+                <!-- Ears -->
+                <circle cx="251" cy="180" r="3.5" fill="#fcdbc7" stroke="#1f2421" stroke-width="1.4"/>
+                <circle cx="279" cy="180" r="3.5" fill="#fcdbc7" stroke="#1f2421" stroke-width="1.4"/>
+
+                <!-- Eyes & Face -->
+                <path d="M 257 172 Q 260 170 263 172" stroke="#1f2421" stroke-width="1.4" stroke-linecap="round" fill="none"/>
+                <path d="M 267 172 Q 270 170 273 172" stroke="#1f2421" stroke-width="1.4" stroke-linecap="round" fill="none"/>
+                <circle cx="260" cy="176" r="1.6" fill="#1f2421"/>
+                <circle cx="270" cy="176" r="1.6" fill="#1f2421"/>
+                <path d="M 265 178 V 183 H 267" stroke="#1f2421" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+                <path d="M 261 187 Q 265 192 269 187" stroke="#1f2421" stroke-width="1.4" stroke-linecap="round" fill="none"/>
+
+                <!-- Curly Hair -->
+                <path d="M 248 172 C 246 162 250 148 260 144 C 265 142 272 142 278 147 C 284 152 284 162 282 170 C 280 166 278 163 273 162 C 268 161 264 163 261 166 C 258 163 252 165 248 172 Z" fill="#1f2421" stroke="#1f2421" stroke-width="1.6"/>
+                <circle cx="256" cy="148" r="5" fill="#1f2421"/>
+                <circle cx="264" cy="144" r="6" fill="#1f2421"/>
+                <circle cx="274" cy="147" r="5.5" fill="#1f2421"/>
+
+                <!-- Hands Typing -->
+                <circle cx="244" cy="296" r="4.5" fill="#fcdbc7" stroke="#1f2421" stroke-width="1.3"/>
+                <circle cx="286" cy="296" r="4.5" fill="#fcdbc7" stroke="#1f2421" stroke-width="1.3"/>
+
+                <!-- White Laptop -->
+                <g filter="url(#card-subtle-shadow-1)">
+                  <rect x="234" y="260" width="62" height="42" rx="5" fill="#ffffff" stroke="#1f2421" stroke-width="1.6"/>
+                  <g transform="translate(265, 281)" fill="#1f2421">
+                    <rect x="-1.8" y="-7.5" width="3.6" height="15" rx="1.8"/>
+                    <rect x="-1.8" y="-7.5" width="3.6" height="15" rx="1.8" transform="rotate(60)"/>
+                    <rect x="-1.8" y="-7.5" width="3.6" height="15" rx="1.8" transform="rotate(120)"/>
+                  </g>
+                </g>
+
+                <!-- Action Ticks -->
+                <line x1="223" y1="262" x2="216" y2="267" stroke="#1f2421" stroke-width="1.5" stroke-linecap="round"/>
+                <line x1="225" y1="274" x2="217" y2="280" stroke="#1f2421" stroke-width="1.5" stroke-linecap="round"/>
+                <line x1="307" y1="262" x2="314" y2="267" stroke="#1f2421" stroke-width="1.5" stroke-linecap="round"/>
+                <line x1="305" y1="274" x2="313" y2="280" stroke="#1f2421" stroke-width="1.5" stroke-linecap="round"/>
+              </g>
+            </svg>
+          </div>
+
+          <div class="auth-visual-copy">
+            <h2 class="auth-visual-heading">Make every website<br>better with FLIQ.</h2>
+            <p class="auth-visual-sub">Discover issues. Improve performance. Ship with confidence.</p>
+          </div>
+        </div>
+
+        <!-- ==================== SLIDE 2: FIND ISSUES ==================== -->
+        <div class="auth-carousel-slide" data-slide-index="1">
+          <div class="auth-illustration-wrap">
+            <svg class="auth-illustration-svg" viewBox="0 0 520 400" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <filter id="card-subtle-shadow-2" x="-8%" y="-8%" width="120%" height="125%" filterUnits="userSpaceOnUse">
+                  <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#142818" flood-opacity="0.06"/>
+                </filter>
+              </defs>
+
+              <!-- Floor shadow -->
+              <ellipse cx="260" cy="355" rx="140" ry="18" fill="#dbeadc"/>
+
+              <!-- Main Browser Window -->
+              <g filter="url(#card-subtle-shadow-2)">
+                <rect x="135" y="70" width="255" height="180" rx="14" fill="#ffffff" stroke="#1f2421" stroke-width="1.8"/>
+                <!-- Browser window header dots -->
+                <circle cx="152" cy="85" r="3" fill="#22c55e"/>
+                <circle cx="162" cy="85" r="3" fill="#cbd5e1"/>
+                <circle cx="172" cy="85" r="3" fill="#cbd5e1"/>
+                <line x1="135" y1="98" x2="390" y2="98" stroke="#f1f5f9" stroke-width="1.2"/>
+
+                <!-- Thumbnail box -->
+                <rect x="152" y="112" width="76" height="58" rx="8" fill="#f1f5f9"/>
+                <circle cx="206" cy="125" r="6" fill="#e2e8f0"/>
+                <path d="M 152 155 L 170 137 L 188 155 L 198 147 L 218 167 L 228 167 L 152 167 Z" fill="#cbd5e1"/>
+
+                <!-- Skeleton lines -->
+                <rect x="240" y="118" width="105" height="7" rx="3.5" fill="#e2e8f0"/>
+                <rect x="240" y="132" width="75" height="7" rx="3.5" fill="#e2e8f0"/>
+                <rect x="240" y="146" width="90" height="7" rx="3.5" fill="#e2e8f0"/>
+                <rect x="152" y="186" width="160" height="6" rx="3" fill="#e2e8f0"/>
+                <rect x="152" y="198" width="110" height="6" rx="3" fill="#e2e8f0"/>
+              </g>
+
+              <!-- Action ticks at top right of browser -->
+              <line x1="380" y1="52" x2="373" y2="60" stroke="#1f2421" stroke-width="1.8" stroke-linecap="round"/>
+              <line x1="393" y1="44" x2="393" y2="54" stroke="#1f2421" stroke-width="1.8" stroke-linecap="round"/>
+              <line x1="406" y1="50" x2="413" y2="58" stroke="#1f2421" stroke-width="1.8" stroke-linecap="round"/>
+
+              <!-- Checklist Card on the left (overlapping) -->
+              <g filter="url(#card-subtle-shadow-2)">
+                <rect x="60" y="165" width="142" height="114" rx="12" fill="#ffffff" stroke="#1f2421" stroke-width="1.8"/>
+
+                <!-- Item 1: Find Issues -->
+                <circle cx="82" cy="195" r="8" fill="#dcfce7"/>
+                <path d="M 78.5 195 L 81 197.5 L 85.5 192.5" stroke="#16a34a" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+                <text x="98" y="199" font-family="'DM Sans',sans-serif" font-size="11.5" font-weight="700" fill="#1f2421">Find Issues</text>
+
+                <!-- Item 2: Get Insights -->
+                <circle cx="82" cy="225" r="8" fill="#dcfce7"/>
+                <path d="M 78.5 225 L 81 227.5 L 85.5 222.5" stroke="#16a34a" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+                <text x="98" y="229" font-family="'DM Sans',sans-serif" font-size="11.5" font-weight="700" fill="#1f2421">Get Insights</text>
+
+                <!-- Item 3: Fix Faster -->
+                <circle cx="82" cy="255" r="8" fill="#dcfce7"/>
+                <path d="M 78.5 255 L 81 257.5 L 85.5 252.5" stroke="#16a34a" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+                <text x="98" y="259" font-family="'DM Sans',sans-serif" font-size="11.5" font-weight="700" fill="#1f2421">Fix Faster</text>
+              </g>
+
+              <!-- Magnifying Glass with Bug (Right side) -->
+              <g filter="url(#card-subtle-shadow-2)">
+                <!-- Glass Lens -->
+                <circle cx="340" cy="198" r="44" fill="#ffffff" stroke="#1f2421" stroke-width="2.2"/>
+
+                <!-- Bug / Beetle -->
+                <!-- Head -->
+                <ellipse cx="340" cy="182" rx="7.5" ry="6" fill="#22c55e" stroke="#1f2421" stroke-width="1.5"/>
+                <!-- Antennae -->
+                <path d="M 336 178 Q 332 173 328 174" stroke="#1f2421" stroke-width="1.4" fill="none" stroke-linecap="round"/>
+                <path d="M 344 178 Q 348 173 352 174" stroke="#1f2421" stroke-width="1.4" fill="none" stroke-linecap="round"/>
+                <!-- Body Shell -->
+                <ellipse cx="340" cy="201" rx="14.5" ry="17.5" fill="#86efac" stroke="#1f2421" stroke-width="1.6"/>
+                <line x1="340" y1="187" x2="340" y2="218" stroke="#1f2421" stroke-width="1.4"/>
+                <!-- Legs (3 left, 3 right) -->
+                <path d="M 326 193 Q 319 191 315 195" stroke="#1f2421" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+                <path d="M 325 201 Q 318 201 314 205" stroke="#1f2421" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+                <path d="M 326 209 Q 319 211 316 216" stroke="#1f2421" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+
+                <path d="M 354 193 Q 361 191 365 195" stroke="#1f2421" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+                <path d="M 355 201 Q 362 201 366 205" stroke="#1f2421" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+                <path d="M 354 209 Q 361 211 364 216" stroke="#1f2421" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+
+                <!-- Magnifying Glass Handle -->
+                <rect x="372" y="226" width="14" height="42" rx="7" transform="rotate(-42 372 226)" fill="#78cb7a" stroke="#1f2421" stroke-width="2"/>
+              </g>
+            </svg>
+          </div>
+
+          <div class="auth-visual-copy">
+            <h2 class="auth-visual-heading">Spot issues<br>before your users do.</h2>
+            <p class="auth-visual-sub">Catch bugs, broken links, and usability problems early.</p>
+          </div>
+        </div>
+
+        <!-- ==================== SLIDE 3: PERFORMANCE ==================== -->
+        <div class="auth-carousel-slide" data-slide-index="2">
+          <div class="auth-illustration-wrap">
+            <svg class="auth-illustration-svg" viewBox="0 0 520 400" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <filter id="card-subtle-shadow-3" x="-8%" y="-8%" width="120%" height="125%" filterUnits="userSpaceOnUse">
+                  <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#142818" flood-opacity="0.06"/>
+                </filter>
+              </defs>
+
+              <!-- Floor shadow -->
+              <ellipse cx="260" cy="355" rx="140" ry="18" fill="#dbeadc"/>
+
+              <!-- Performance Graph Card (Left) -->
+              <g filter="url(#card-subtle-shadow-3)">
+                <rect x="80" y="105" width="188" height="155" rx="14" fill="#ffffff" stroke="#1f2421" stroke-width="1.8"/>
+                <line x1="80" y1="130" x2="268" y2="130" stroke="#f1f5f9" stroke-width="1.2"/>
+
+                <!-- 4 Ascending Green Bars -->
+                <rect x="106" y="200" width="14" height="35" rx="4" fill="#bbf7d0"/>
+                <rect x="132" y="180" width="14" height="55" rx="4" fill="#86efac"/>
+                <rect x="158" y="160" width="14" height="75" rx="4" fill="#4ade80"/>
+                <rect x="184" y="140" width="14" height="95" rx="4" fill="#22c55e"/>
+
+                <!-- Upward Trending Arrow -->
+                <path d="M 102 208 C 128 190 158 170 196 128" stroke="#1f2421" stroke-width="2.2" fill="none" stroke-linecap="round"/>
+                <polygon points="202,122 191,126 197,134" fill="#1f2421"/>
+              </g>
+
+              <!-- Action ticks on bottom-left -->
+              <line x1="66" y1="248" x2="56" y2="253" stroke="#1f2421" stroke-width="1.8" stroke-linecap="round"/>
+              <line x1="63" y1="262" x2="53" y2="267" stroke="#1f2421" stroke-width="1.8" stroke-linecap="round"/>
+              <line x1="70" y1="275" x2="62" y2="282" stroke="#1f2421" stroke-width="1.8" stroke-linecap="round"/>
+
+              <!-- Rocket Launching at Top-Right -->
+              <g transform="translate(365, 88) rotate(42)">
+                <!-- Thruster Flame / Smoke -->
+                <path d="M -7 38 Q 0 54 7 38 Q 0 42 -7 38 Z" fill="#fde047" stroke="#1f2421" stroke-width="1.4"/>
+                <path d="M -4 38 Q 0 48 4 38 Q 0 41 -4 38 Z" fill="#ef4444"/>
+                <line x1="-11" y1="42" x2="-17" y2="50" stroke="#1f2421" stroke-width="1.6" stroke-linecap="round"/>
+                <line x1="11" y1="42" x2="17" y2="50" stroke="#1f2421" stroke-width="1.6" stroke-linecap="round"/>
+
+                <!-- Rocket Fins -->
+                <path d="M -13 18 L -23 36 L -13 32 Z" fill="#78cb7a" stroke="#1f2421" stroke-width="1.8"/>
+                <path d="M 13 18 L 23 36 L 13 32 Z" fill="#78cb7a" stroke="#1f2421" stroke-width="1.8"/>
+
+                <!-- Fuselage -->
+                <path d="M 0 -28 C 17 -8 15 26 13 34 L -13 34 C -15 26 -17 -8 0 -28 Z" fill="#ffffff" stroke="#1f2421" stroke-width="2"/>
+                <path d="M 0 -28 C 7 -20 9 -12 9 -6 L -9 -6 C -9 -12 -7 -20 0 -28 Z" fill="#78cb7a"/>
+
+                <!-- Porthole Window -->
+                <circle cx="0" cy="8" r="7" fill="#ffffff" stroke="#1f2421" stroke-width="1.8"/>
+                <circle cx="0" cy="8" r="4.5" fill="#78cb7a"/>
+              </g>
+
+              <!-- Floating Site Score Card (Right, overlapping chart) -->
+              <g filter="url(#card-subtle-shadow-3)">
+                <rect x="250" y="170" width="138" height="116" rx="14" fill="#ffffff" stroke="#1f2421" stroke-width="1.8"/>
+                <text x="319" y="196" text-anchor="middle" font-family="'DM Sans',sans-serif" font-size="11.5" font-weight="700" fill="#1f2421">Site Score</text>
+
+                <!-- Circular Ring Gauge -->
+                <circle cx="319" cy="242" r="28" fill="none" stroke="#e2e8f0" stroke-width="5"/>
+                <circle cx="319" cy="242" r="28" fill="none" stroke="#22c55e" stroke-width="5" stroke-dasharray="175" stroke-dashoffset="15" stroke-linecap="round" transform="rotate(-90 319 242)"/>
+
+                <text x="319" y="250" text-anchor="middle" font-family="'DM Sans',sans-serif" font-size="22" font-weight="800" fill="#1f2421">98</text>
+              </g>
+            </svg>
+          </div>
+
+          <div class="auth-visual-copy">
+            <h2 class="auth-visual-heading">Improve performance<br>and grow faster.</h2>
+            <p class="auth-visual-sub">Optimize speed, SEO, and overall site health with actionable insights.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3 Navigation Dots at Bottom -->
+    <div class="auth-visual-dots" role="tablist" aria-label="Carousel navigation">
+      <button type="button" class="auth-visual-dot active" data-carousel-dot="0" aria-label="Slide 1: Website Testing" role="tab" aria-selected="true"></button>
+      <button type="button" class="auth-visual-dot" data-carousel-dot="1" aria-label="Slide 2: Find Issues" role="tab" aria-selected="false"></button>
+      <button type="button" class="auth-visual-dot" data-carousel-dot="2" aria-label="Slide 3: Performance" role="tab" aria-selected="false"></button>
+    </div>
+  </aside>`;
+}
+
 function auth(signup=false){
   const params = new URLSearchParams(location.search);
   const pendingUrl = params.get('pendingUrl') || sessionStorage.getItem('fliqPendingUrl') || '';
@@ -537,24 +1019,102 @@ function auth(signup=false){
     </div>
   ` : '';
 
-  return `<main class="auth-layout"><section class="auth-form">${logo}<div class="auth-inner">
-    ${pendingBanner}
-    ${planBanner}
-    <h1>${signup?'Create your account':'Welcome back'}${signup?'':' 👋'}</h1>
-    <p>${signup?'Start testing your websites with AI.':'Sign in to continue to FLIQ.'}</p>
-    <button class="social-auth" data-oauth="Google"><b>G</b> Continue with Google</button>
-    <div id="oauth-message" class="oauth-message" role="status" aria-live="polite"></div>
-    <div class="divider">or</div>
-    <form id="auth-form">
-      ${signup?'<label>Name<input name="name" autocomplete="name" required placeholder="Your name"></label>':''}
-      <label>Email<input name="email" type="email" autocomplete="email" required placeholder="you@example.com"></label>
-      <label>Password<input name="password" type="password" minlength="6" autocomplete="${signup?'new-password':'current-password'}" required placeholder="••••••••"></label>
-      ${signup?'':`<a class="forgot" href="/forgot-password${authQueryString}" data-route>Forgot password?</a>`}
-      <button class="btn black full" type="submit">${signup?'Create account':'Sign in'}</button>
-      <div id="auth-message" role="status" aria-live="polite"></div>
-    </form>
-    <div class="auth-switch">${signup?'Already have an account?':'Don’t have an account?'} <a href="${signup?`/login${authQueryString}`:`/signup${authQueryString}`}" data-route>${signup?'Sign in':'Create one'}</a></div>
-  </div></section>${artwork('blue')}</main>`;
+  return `<main class="auth-page-wrapper">
+    <div class="auth-window-card">
+      <div class="auth-window-bar">
+        <div class="auth-traffic-dots" aria-hidden="true">
+          <span class="auth-traffic-dot dot-red"></span>
+          <span class="auth-traffic-dot dot-yellow"></span>
+          <span class="auth-traffic-dot dot-green"></span>
+        </div>
+      </div>
+
+      <div class="auth-window-body">
+        <!-- Left Column: Authentication Form -->
+        <section class="auth-form-column">
+          <div class="auth-form-inner">
+            <a href="/" class="auth-brand-badge" data-route aria-label="FLIQ Home">
+              <svg class="auth-brand-asterisk" viewBox="0 0 32 32" width="28" height="28" fill="#111827">
+                <rect x="13" y="3" width="6" height="26" rx="3"/>
+                <rect x="13" y="3" width="6" height="26" rx="3" transform="rotate(60 16 16)"/>
+                <rect x="13" y="3" width="6" height="26" rx="3" transform="rotate(120 16 16)"/>
+              </svg>
+              <span class="auth-brand-title">FLIQ</span>
+            </a>
+
+            <h1 class="auth-title">${signup ? 'Create your account' : 'Welcome back!'}</h1>
+            <p class="auth-sub">${signup ? 'Start testing your websites with AI.' : "Your websites deserve better. Let's get testing."}</p>
+
+            ${pendingBanner}
+            ${planBanner}
+
+            <form id="auth-form" class="auth-form-fields" novalidate>
+              ${signup ? `
+                <div class="auth-input-group">
+                  <svg class="auth-input-icon" viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="#6b7280" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M16 17v-1.5a3.5 3.5 0 0 0-3.5-3.5h-5A3.5 3.5 0 0 0 4 15.5V17"/>
+                    <circle cx="10" cy="6.5" r="3.5"/>
+                  </svg>
+                  <input name="name" type="text" autocomplete="name" required placeholder="Your name">
+                </div>
+              ` : ''}
+
+              <div class="auth-input-group">
+                <svg class="auth-input-icon" viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="#6b7280" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="2.5" y="4.5" width="15" height="11" rx="2.5"/>
+                  <path d="m3.5 5.5 6.5 5 6.5-5"/>
+                </svg>
+                <input name="email" type="email" autocomplete="email" required placeholder="Email">
+              </div>
+
+              <div class="auth-input-group">
+                <svg class="auth-input-icon" viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="#6b7280" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="3.5" y="8.5" width="13" height="9" rx="2"/>
+                  <path d="M6.5 8.5V6a3.5 3.5 0 0 1 7 0v2.5"/>
+                </svg>
+                <input name="password" id="auth-password-input" type="password" minlength="6" autocomplete="${signup ? 'new-password' : 'current-password'}" required placeholder="Password">
+                <button type="button" class="auth-eye-btn" data-toggle-password aria-label="Toggle password visibility">
+                  <svg class="auth-eye-icon" viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="#6b7280" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M1.5 10s3.5-6 8.5-6 8.5 6 8.5 6-3.5 6-8.5 6-8.5-6-8.5-6z"/>
+                    <circle cx="10" cy="10" r="2.5"/>
+                  </svg>
+                </button>
+              </div>
+
+              ${signup ? '' : `
+                <div class="auth-forgot-row">
+                  <a class="auth-forgot-link" href="/forgot-password${authQueryString}" data-route>Forgot password?</a>
+                </div>
+              `}
+
+              <button class="auth-submit-btn" type="submit">${signup ? 'Create account' : 'Login'}</button>
+              <div id="auth-message" role="status" aria-live="polite"></div>
+            </form>
+
+            <div class="auth-divider"><span>or continue with</span></div>
+
+            <button type="button" class="auth-google-btn" data-oauth="Google">
+              <svg class="auth-google-icon" viewBox="0 0 24 24" width="20" height="20">
+                <path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17z"/>
+                <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.1-6.72-4.93H1.25v3.15C3.26 21.36 7.33 24 12 24z"/>
+                <path fill="#FBBC05" d="M5.28 14.27A7.18 7.18 0 0 1 4.9 12c0-.79.14-1.57.38-2.27V6.58H1.25A11.96 11.96 0 0 0 0 12c0 1.92.45 3.74 1.25 5.42l4.03-3.15z"/>
+                <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.33 0 3.26 2.64 1.25 6.58l4.03 3.15C6.23 6.85 8.88 4.75 12 4.75z"/>
+              </svg>
+              <span>Continue with Google</span>
+            </button>
+            <div id="oauth-message" class="oauth-message" role="status" aria-live="polite"></div>
+
+            <div class="auth-footer-switch">
+              ${signup ? `Already have an account? <a href="/login${authQueryString}" data-route>Sign in.</a>` : `Not a member? <a href="/signup${authQueryString}" data-route>Create an account.</a>`}
+            </div>
+          </div>
+        </section>
+
+        <!-- Right Column: Visual Panel -->
+        ${authIllustrationPanel()}
+      </div>
+    </div>
+  </main>`;
 }
 function forgot(){
   const params = new URLSearchParams(location.search);
@@ -568,7 +1128,55 @@ function forgot(){
     queryParams.set('period', pendingPeriod);
   }
   const forgotQuery = queryParams.toString() ? `?${queryParams.toString()}` : '';
-  return `<main class="auth-layout"><section class="auth-form">${logo}<div class="auth-inner"><h1>Reset your password</h1><p>Enter your email and we'll send a reset link.</p><form id="reset-form"><label>Email<input name="email" type="email" required placeholder="you@example.com"></label><button class="btn black full">Send reset link</button><div id="reset-message"></div></form><div class="auth-switch"><a href="/login${forgotQuery}" data-route>← Back to sign in</a></div></div></section>${artwork('blue')}</main>`;
+
+  return `<main class="auth-page-wrapper">
+    <div class="auth-window-card">
+      <div class="auth-window-bar">
+        <div class="auth-traffic-dots" aria-hidden="true">
+          <span class="auth-traffic-dot dot-red"></span>
+          <span class="auth-traffic-dot dot-yellow"></span>
+          <span class="auth-traffic-dot dot-green"></span>
+        </div>
+      </div>
+
+      <div class="auth-window-body">
+        <section class="auth-form-column">
+          <div class="auth-form-inner">
+            <a href="/" class="auth-brand-badge" data-route aria-label="FLIQ Home">
+              <svg class="auth-brand-asterisk" viewBox="0 0 32 32" width="28" height="28" fill="#111827">
+                <rect x="13" y="3" width="6" height="26" rx="3"/>
+                <rect x="13" y="3" width="6" height="26" rx="3" transform="rotate(60 16 16)"/>
+                <rect x="13" y="3" width="6" height="26" rx="3" transform="rotate(120 16 16)"/>
+              </svg>
+              <span class="auth-brand-title">FLIQ</span>
+            </a>
+
+            <h1 class="auth-title">Reset your password</h1>
+            <p class="auth-sub">Enter your email and we'll send a reset link.</p>
+
+            <form id="reset-form" class="auth-form-fields" novalidate>
+              <div class="auth-input-group">
+                <svg class="auth-input-icon" viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="#6b7280" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="2.5" y="4.5" width="15" height="11" rx="2.5"/>
+                  <path d="m3.5 5.5 6.5 5 6.5-5"/>
+                </svg>
+                <input name="email" type="email" autocomplete="email" required placeholder="Email">
+              </div>
+
+              <button class="auth-submit-btn" type="submit">Send reset link</button>
+              <div id="reset-message" role="status" aria-live="polite"></div>
+            </form>
+
+            <div class="auth-footer-switch" style="margin-top: 28px;">
+              <a href="/login${forgotQuery}" data-route>← Back to sign in</a>
+            </div>
+          </div>
+        </section>
+
+        ${authIllustrationPanel()}
+      </div>
+    </div>
+  </main>`;
 }
 function getActiveScanState() {
   try {
@@ -699,9 +1307,9 @@ function startGlobalScanTracker() {
   }, 2000);
 }
 
-const items=[['⌂','Dashboard','/dashboard'],['＋','New Test','/dashboard/new-test'],['◷','History','/dashboard/history'],['▤','Reports','/dashboard/reports'],['◎','Monitors','/dashboard/monitors'],['♧','Team','/dashboard/team'],['⚙','Settings','/dashboard/settings']];
-const side=()=>`<aside class="sidebar">${logo}<div class="side-links">${items.map(([i,n,p])=>`<a class="${path===p?'current':''}" href="${p}" data-route><span>${i}</span>${n}</a>`).join('')}</div><div class="side-bottom"><span>F</span><div>FLIQ workspace<br><small>Free plan</small></div><button data-action="signout" aria-label="Sign out">↗</button></div></aside>`;
-const appShell=content=>`<div class="app-layout">${side()}<main class="app-main"><header class="app-top"><input class="search" placeholder="⌕  Search tests..." aria-label="Search tests"><div class="top-icons"><button aria-label="Notifications">♧</button><button class="avatar" data-go="/dashboard/settings">${(localStorage.getItem('fliqName')||'A')[0].toUpperCase()}</button></div></header>${renderGlobalScanBanner()}${content}</main></div>`;
+const items=[['⌂','Dashboard','/dashboard'],['＋','New Test','/dashboard/new-test'],['◷','History','/dashboard/history'],['▤','Reports','/dashboard/reports'],['◎','Monitors','/dashboard/monitors'],['⚙','Settings','/dashboard/settings']];
+const side=()=>`<aside class="sidebar">${logo}<div class="side-links">${items.map(([i,n,p])=>`<a class="${path===p?'current':''}" href="${p}" data-route><span>${i}</span>${n}</a>`).join('')}</div><div class="side-bottom"><span>F</span><div>FLIQ workspace<br><small>Free plan</small></div></div></aside>`;
+const appShell=content=>`<div class="app-layout">${side()}<main class="app-main"><header class="app-top"><input class="search" placeholder="⌕  Search tests..." aria-label="Search tests"><div class="top-icons"><button class="avatar" data-go="/dashboard/settings">${(localStorage.getItem('fliqName')||'A')[0].toUpperCase()}</button></div></header>${renderGlobalScanBanner()}${content}</main></div>`;
 let testLoadError = false;
 let testLoadMessage = '';
 let isFetchingTests = false;
@@ -2067,9 +2675,27 @@ async function issuePage(testId,issueId){
     </div>
   `);
 }
+function logoutConfirmDialog() {
+  if (!logoutConfirmOpen) return '';
+  return `
+    <div class="modal-backdrop" id="logout-modal-backdrop" style="z-index:1000;display:flex;align-items:center;justify-content:center">
+      <section class="demo-modal logout-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="logout-confirm-title" style="max-width:400px;width:100%;padding:28px 24px;background:#ffffff;border-radius:12px;box-shadow:0 20px 48px rgba(0,0,0,0.22);border:1px solid #ded9d2">
+        <h2 id="logout-confirm-title" style="font-size:20px;font-weight:700;margin:0 0 8px 0;color:#111;letter-spacing:-0.02em">Log out</h2>
+        <p style="font-size:13px;color:#6e6962;margin:0 0 20px 0;line-height:1.5">Are you sure you want to log out?</p>
+        ${logoutError ? `<div id="logout-error-message" style="background:#fef2f2;border:1px solid #fecaca;color:#b91c1c;padding:10px 14px;border-radius:6px;font-size:12px;margin-bottom:16px;line-height:1.4">${esc(logoutError)}</div>` : ''}
+        <div style="display:flex;justify-content:flex-end;gap:10px">
+          <button type="button" class="btn outline" data-action="cancel-logout" ${isLoggingOut ? 'disabled style="opacity:0.5;cursor:not-allowed;padding:9px 18px;font-size:12px;border-radius:6px;min-height:38px"' : 'style="padding:9px 18px;font-size:12px;border-radius:6px;min-height:38px"'}>Cancel</button>
+          <button type="button" class="btn btn-logout-confirm" data-action="do-logout" ${isLoggingOut ? 'disabled style="opacity:0.75;cursor:not-allowed;padding:9px 18px;font-size:12px;border-radius:6px;min-height:38px"' : 'style="padding:9px 18px;font-size:12px;border-radius:6px;min-height:38px"'}>${isLoggingOut ? 'Logging out...' : 'Log out'}</button>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
 function settings(){
-  const tab=location.hash.slice(1)||'Profile';
-  const tabs=['Profile','Preferences','Billing','Team','API Keys'];
+  const tabs=['Profile','Preferences','Billing'];
+  const rawTab=location.hash.slice(1);
+  const tab=tabs.includes(rawTab)?rawTab:'Profile';
   let prefs=JSON.parse(localStorage.getItem('fliqPrefs')||'{}');
   if(firebaseConfigured&&localStorage.getItem('fliqToken')){
     apiFetch('/api/profile').then(r=>r.json()).then(j=>{
@@ -2082,8 +2708,15 @@ function settings(){
       }
     }).catch(()=>{});
   }
-  let content=tab==='Profile'?`<h3>Profile information</h3><label>Name<input id="profile-name" value="${esc(localStorage.getItem('fliqName')||'')}" placeholder="Your name"></label><label>Email<input value="${esc(localStorage.getItem('fliqEmail')||'')}" disabled></label><button class="btn black" data-action="save-profile">Save changes</button>`:tab==='Preferences'?`<h3>Preferences</h3><label><input id="email-notifications" type="checkbox" ${prefs.emailNotifications===false?'':'checked'}> Email notifications</label><label>Default viewport<select id="default-viewport"><option ${prefs.defaultViewport==='Mobile'?'':'selected'}>Desktop</option><option ${prefs.defaultViewport==='Mobile'?'selected':''}>Mobile</option></select></label><button class="btn black" data-action="save-prefs">Save changes</button>`:tab==='Billing'?`<h3>Free plan</h3><p>Subscription billing is not connected. Plan limits are not enforced in this local setup.</p>${btn('Compare plans','/pricing','btn outline')}`:tab==='Team'?`<h3>Team workspace</h3><p>Team collaboration requires an authorized team backend.</p><button class="btn outline" disabled>Invite teammate</button>`:`<h3>API keys</h3><p>Secure API-key management is not configured. No keys are stored in this app.</p><button class="btn outline" disabled>Generate key</button>`;
-  return appShell(`<div class="page-head"><span class="eyebrow">YOUR WORKSPACE</span><h1>Settings</h1><p>Manage your account and preferences.</p></div><div class="settings-tabs">${tabs.map(x=>`<a href="#${x}" class="${x===tab?'selected':''}">${x}</a>`).join('')}</div><section class="settings-card">${content}</section>`);
+  let content='';
+  if(tab==='Preferences'){
+    content=`<h3>Preferences</h3><label><input id="email-notifications" type="checkbox" ${prefs.emailNotifications===false?'':'checked'}> Email notifications</label><label>Default viewport<select id="default-viewport"><option ${prefs.defaultViewport==='Mobile'?'':'selected'}>Desktop</option><option ${prefs.defaultViewport==='Mobile'?'selected':''}>Mobile</option></select></label><button class="btn black" data-action="save-prefs">Save changes</button>`;
+  } else if(tab==='Billing'){
+    content=`<h3>Free plan</h3><p>Subscription billing is not connected. Plan limits are not enforced in this local setup.</p>${btn('Compare plans','/pricing','btn outline')}`;
+  } else {
+    content=`<h3>Profile information</h3><label>Name<input id="profile-name" value="${esc(localStorage.getItem('fliqName')||'')}" placeholder="Your name"></label><label>Email<input value="${esc(localStorage.getItem('fliqEmail')||'')}" disabled></label><button class="btn black" data-action="save-profile">Save changes</button><div class="account-security-section" style="margin-top:36px;padding-top:24px;border-top:1px solid #ded9d2"><h3 style="font-size:14px;margin:0 0 4px;color:#111">Account Security</h3><p style="margin:0 0 16px;color:#6e6962;font-size:11px">Manage your account access and security.</p><button type="button" class="btn outline btn-logout" data-action="confirm-logout">Log out</button></div>`;
+  }
+  return appShell(`<div class="page-head"><span class="eyebrow">YOUR WORKSPACE</span><h1>Settings</h1><p>Manage your account and preferences.</p></div><div class="settings-tabs">${tabs.map(x=>`<a href="#${x}" class="${(tab===x || (!tabs.includes(tab) && x==='Profile'))?'selected':''}">${x}</a>`).join('')}</div><section class="settings-card">${content}</section>${logoutConfirmDialog()}`);
 }
 function onboarding(){return `<main class="onboard"><section><div class="onboard-header">${logo}<span>1/3</span></div><div class="onboard-content"><span class="eyebrow">LET'S PERSONALIZE FLIQ</span><h1>What type of websites<br>do you test most?</h1><p>This helps us personalize your experience.</p><div class="choices">${['Personal / Portfolio','Business / Company','E-commerce','Web App / SaaS','Other'].map((x,i)=>`<button class="choice" data-choice="${x}"><span>${['◉','▣','♙','▤','＋'][i]}</span>${x}<b>○</b></button>`).join('')}</div><div class="onboard-actions"><button class="btn outline" data-go="/dashboard">Skip</button><button class="btn black" data-action="onboard-next">Next →</button></div></div></section><aside class="onboard-art">${artwork('pink')}</aside></main>`}
 function docs(){return `${nav()}<main class="text-page"><span class="eyebrow">FLIQ GUIDE</span><h1>Test. Fix. Ship.</h1><p>Welcome to FLIQ, the clear and practical way to understand your website health.</p><h2>Run your first test</h2><ol><li>Create a FLIQ account and sign in.</li><li>Open Dashboard → New Test.</li><li>Enter a public website URL and start the scan.</li><li>Review findings and download the report.</li></ol><h2>What FLIQ checks</h2><p>Page availability, JavaScript errors, same-origin failed requests, internal links, missing images, basic accessible names, and page load timing.</p><p>Testing runs against publicly reachable sites. FLIQ does not submit forms or change third-party websites.</p>${btn('Open dashboard','/dashboard')}</main>${footer()}`}
@@ -2169,6 +2802,7 @@ function render(){
   try{
     stopHeroWalkthrough();
     clearProductDemo();
+    stopAuthCarousel();
     path=location.pathname;
     const current=path;
     const parts=path.split('/').filter(Boolean);
@@ -2263,6 +2897,7 @@ function render(){
     }else{
       $('#app').innerHTML=out;
       if(current==='/'){ startHeroWalkthrough(); startProductDemo(); }
+      if(current==='/login' || current==='/signup' || current==='/forgot-password'){ initAuthCarousel(); }
     }
   }catch(renderErr){
     console.error('[FLIQ] Render exception:',renderErr);
@@ -2303,27 +2938,31 @@ function validateInputUrl(raw) {
 
 let isTestRunning = false;
 async function triggerPendingScan(targetUrl) {
+  if (isTestRunning) return;
+  const validation = validateInputUrl(targetUrl);
+  if (!validation.valid) {
+    console.error('[FLIQ] Pending scan URL invalid:', targetUrl, validation.error);
+    go('/dashboard');
+    return;
+  }
+  const cleanUrl = validation.url;
   isTestRunning = true;
+  let scanJob = null;
   try {
     const r = await apiFetch('/api/tests', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ url: targetUrl })
+      body: JSON.stringify({ url: cleanUrl })
     });
     const text = await r.text();
     let j;
     try { j = JSON.parse(text); } catch { j = { error: 'Invalid response from server.' }; }
     if (!r.ok) throw new Error(j.error || 'Failed to start scan.');
-    modal = false;
-    isTestRunning = false;
-    setActiveScanState(j.id, targetUrl, 'Initializing browser', 10, 'running');
-    startGlobalScanTracker();
-    go(`/dashboard/tests/${j.id}`);
-    poll(j.id);
+    scanJob = j;
   } catch (err) {
     isTestRunning = false;
     console.error('[FLIQ] Pending scan execution error:', err);
-    try { sessionStorage.setItem('fliqPendingUrl', targetUrl); } catch {}
+    try { sessionStorage.setItem('fliqPendingUrl', cleanUrl); } catch {}
     go('/dashboard');
     setTimeout(() => {
       const runPanel = document.querySelector('.run-panel') || document.querySelector('.app-main');
@@ -2333,15 +2972,33 @@ async function triggerPendingScan(targetUrl) {
         banner.id = 'scan-retry-banner';
         banner.style.borderLeftColor = '#a02c24';
         banner.style.background = '#fff5f4';
-        banner.innerHTML = `<strong style="color:#a02c24">Scan could not start automatically:</strong> ${esc(err.message)} <button class="btn black" style="margin-left:12px;padding:4px 12px;font-size:11px" id="retry-pending-btn">Retry scan for ${esc(targetUrl)}</button>`;
+        banner.innerHTML = `<strong style="color:#a02c24">Scan could not start automatically:</strong> ${esc(err.message)} <button class="btn black" style="margin-left:12px;padding:4px 12px;font-size:11px" id="retry-pending-btn">Retry scan for ${esc(cleanUrl)}</button>`;
         runPanel.prepend(banner);
         document.querySelector('#retry-pending-btn')?.addEventListener('click', () => {
           sessionStorage.removeItem('fliqPendingUrl');
           document.querySelector('#scan-retry-banner')?.remove();
-          triggerPendingScan(targetUrl);
+          triggerPendingScan(cleanUrl);
         });
       }
     }, 200);
+    return;
+  }
+
+  isTestRunning = false;
+  modal = false;
+  try {
+    setActiveScanState(scanJob.id, cleanUrl, 'Initializing browser', 10, 'running');
+    startGlobalScanTracker();
+  } catch (stateErr) {
+    console.warn('[FLIQ] Notice updating active scan state:', stateErr);
+  }
+
+  try {
+    go(`/dashboard/tests/${scanJob.id}`);
+    poll(scanJob.id);
+  } catch (navErr) {
+    console.warn('[FLIQ] Notice navigating to live scan view:', navErr);
+    go('/dashboard');
   }
 }
 window.triggerPendingScan = triggerPendingScan;
@@ -2349,7 +3006,7 @@ window.validateInputUrl = validateInputUrl;
 
 async function runTest(form){
   if(isTestRunning) return;
-  const urlInput = form.querySelector('input[name="url"]');
+  const urlInput = form.querySelector('input[name="url"]') || form.querySelector('input[type="url"]') || document.querySelector('#quick-test-url');
   const rawUrl = urlInput ? urlInput.value : '';
   const out = form.querySelector('[id$="error"]') || document.querySelector('#demo-error') || document.querySelector('#test-error');
   const button = form.querySelector('button[type="submit"]') || form.querySelector('button:not([data-go])') || form.querySelector('button');
@@ -2364,6 +3021,8 @@ async function runTest(form){
     return;
   }
 
+  const targetUrl = validation.url;
+
   if (out) out.textContent = '';
   if (urlInput) urlInput.classList.remove('has-error');
 
@@ -2371,10 +3030,10 @@ async function runTest(form){
   await firebaseStatusPromise;
   const isAuthed = Boolean(firebaseAuth?.currentUser || localStorage.getItem('fliqTestUid') || (!firebaseWebConfigured && localStorage.getItem('fliqEmail')));
   if (!isAuthed) {
-    try { sessionStorage.setItem('fliqPendingUrl', validation.url); } catch {}
+    try { sessionStorage.setItem('fliqPendingUrl', targetUrl); } catch {}
     modal = false;
     render();
-    go(`/login?pendingUrl=${encodeURIComponent(validation.url)}`);
+    go(`/login?pendingUrl=${encodeURIComponent(targetUrl)}`);
     return;
   }
 
@@ -2385,37 +3044,53 @@ async function runTest(form){
     button.textContent = 'Starting test…';
   }
 
+  let scanJob = null;
   try {
     const r = await apiFetch('/api/tests', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ url: validation.url })
+      body: JSON.stringify({ url: targetUrl })
     });
     const text = await r.text();
     let j;
     try { j = JSON.parse(text); } catch { j = { error: 'Invalid response from server.' }; }
     if (!r.ok) throw new Error(j.error || 'Failed to start scan.');
-
-    modal = false;
-    isTestRunning = false;
-    setActiveScanState(j.id, targetUrl, 'Initializing browser', 10, 'running');
-    startGlobalScanTracker();
-    go(`/dashboard/tests/${j.id}`);
-    poll(j.id);
-  } catch (e) {
+    scanJob = j;
+  } catch (apiErr) {
     isTestRunning = false;
     if (button) {
       button.disabled = false;
       button.innerHTML = originalButtonText;
     }
     if (out) {
-      out.textContent = e.message || 'An error occurred while starting the test.';
+      out.textContent = apiErr.message || 'An error occurred while starting the test.';
     } else {
-      alert(e.message);
+      alert(apiErr.message);
     }
     if (urlInput) {
       urlInput.focus();
     }
+    return;
+  }
+
+  // Once HTTP 202 Accepted with scanJob.id is received, the background scan is successfully created.
+  // Errors in peripheral UI transitions must never report the scan as failed or block navigation.
+  isTestRunning = false;
+  modal = false;
+
+  try {
+    setActiveScanState(scanJob.id, targetUrl, 'Initializing browser', 10, 'running');
+    startGlobalScanTracker();
+  } catch (stateErr) {
+    console.warn('[FLIQ] Notice updating active scan state:', stateErr);
+  }
+
+  try {
+    go(`/dashboard/tests/${scanJob.id}`);
+    poll(scanJob.id);
+  } catch (navErr) {
+    console.warn('[FLIQ] Notice navigating to live scan view:', navErr);
+    go('/dashboard');
   }
 }
 
@@ -2541,6 +3216,15 @@ document.addEventListener('click',async e=>{
     render();
     return;
   }
+  if(e.target.id==='logout-modal-backdrop'){
+    e.preventDefault();
+    if(!isLoggingOut){
+      logoutConfirmOpen=false;
+      logoutError='';
+      render();
+    }
+    return;
+  }
   if(e.target.closest('[data-close]')){modal=false;render();return}
   const p=e.target.closest('[data-period]');if(p){period=p.dataset.period;render();return}
   const t=e.target.closest('[data-tab]');if(t){activeTab=t.dataset.tab;render();return}
@@ -2557,6 +3241,40 @@ document.addEventListener('click',async e=>{
     const fid = toggleFinding.dataset.findingId;
     liveSelectedFindingId = (liveSelectedFindingId === fid ? null : fid);
     render();
+    return;
+  }
+  const togglePwd = e.target.closest('[data-toggle-password]');
+  if (togglePwd) {
+    e.preventDefault();
+    const group = togglePwd.closest('.auth-input-group');
+    const input = group?.querySelector('input[name="password"]') || document.querySelector('#auth-password-input');
+    if (input) {
+      const isPwd = input.type === 'password';
+      input.type = isPwd ? 'text' : 'password';
+      togglePwd.setAttribute('aria-label', isPwd ? 'Hide password' : 'Show password');
+      togglePwd.innerHTML = isPwd ? `
+        <svg class="auth-eye-icon" viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="#111827" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14.12 14.12a8.5 8.5 0 0 1-4.12 1.38c-5 0-8.5-6-8.5-6a16.8 16.8 0 0 1 3.44-4.56M7.5 7.5a3 3 0 0 1 4.24 4.24"/>
+          <path d="M1.5 1.5l17 17"/>
+          <path d="M9.88 4.5a8.8 8.8 0 0 1 1.62-.0c5 0 8.5 6 8.5 6a16.8 16.8 0 0 1-2.16 3.19"/>
+        </svg>
+      ` : `
+        <svg class="auth-eye-icon" viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="#6b7280" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M1.5 10s3.5-6 8.5-6 8.5 6 8.5 6-3.5 6-8.5 6-8.5-6-8.5-6z"/>
+          <circle cx="10" cy="10" r="2.5"/>
+        </svg>
+      `;
+    }
+    return;
+  }
+  const carouselDot = e.target.closest('[data-carousel-dot]');
+  if (carouselDot) {
+    e.preventDefault();
+    const idx = parseInt(carouselDot.dataset.carouselDot, 10);
+    if (!isNaN(idx)) {
+      setAuthCarouselSlide(idx);
+      resetAuthCarouselTimer();
+    }
     return;
   }
   const fil=e.target.closest('[data-filter]');if(fil){issueFilter=fil.dataset.filter;render();return}
@@ -2597,19 +3315,27 @@ document.addEventListener('click',async e=>{
       });
     }
     if(action==='copy'){navigator.clipboard?.writeText(a.dataset.copy);a.textContent='Copied'}
-    if(action==='signout'){
-      window.__fliqSignOutCalls=(window.__fliqSignOutCalls||0)+1;
-      if(firebaseAuthSdk&&firebaseAuth)firebaseAuthSdk.signOut(firebaseAuth).catch(()=>{});
-      for(const k of ['fliqName','fliqEmail','fliqToken','fliqRefresh','fliqTestUid'])localStorage.removeItem(k);
-      try{
-        sessionStorage.removeItem('fliqPendingUrl');
-        sessionStorage.removeItem('fliqPendingPlan');
-        sessionStorage.removeItem('fliqPendingPeriod');
-        sessionStorage.removeItem('fliqSelectedPlan');
-        sessionStorage.removeItem('fliqSelectedPeriod');
-      }catch{}
-      resolvedAuthUser=null;
-      go('/login');
+    if(action==='confirm-logout'){
+      e.preventDefault();
+      logoutConfirmOpen = true;
+      isLoggingOut = false;
+      logoutError = '';
+      render();
+      return;
+    }
+    if(action==='cancel-logout'){
+      e.preventDefault();
+      if(!isLoggingOut){
+        logoutConfirmOpen = false;
+        logoutError = '';
+        render();
+      }
+      return;
+    }
+    if(action==='do-logout' || action==='signout'){
+      e.preventDefault();
+      await executeSignOut();
+      return;
     }
     if(action==='save-profile'){
       const name=$('#profile-name').value;localStorage.setItem('fliqName',name);
@@ -2663,10 +3389,20 @@ document.addEventListener('keydown', async e => {
     await logoNavigate(e);
     return;
   }
-  if (e.key === 'Escape' && modal) {
-    modal = false;
-    render();
-    return;
+  if (e.key === 'Escape') {
+    if (logoutConfirmOpen) {
+      if (!isLoggingOut) {
+        logoutConfirmOpen = false;
+        logoutError = '';
+        render();
+      }
+      return;
+    }
+    if (modal) {
+      modal = false;
+      render();
+      return;
+    }
   }
   productMenuKeydown(e);
 });

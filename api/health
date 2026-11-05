@@ -1,0 +1,13 @@
+{
+  "ok": true,
+  "playwrightConfigured": false,
+  "firebaseConfigured": true,
+  "firebaseWebConfigured": true,
+  "firebaseWebMissing": [],
+  "firebaseAdminConfigured": false,
+  "credentialType": "none",
+  "firebaseMissing": [
+    "Backend container required for server-side scan execution"
+  ],
+  "authMode": "firebase-client"
+}
