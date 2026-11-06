@@ -328,7 +328,19 @@ function broadcastScanUpdate(testId, data) {
   }
 }
 
-const MAX_CONCURRENT_SCANS = 3;
+export function parseConcurrentScans(envVal = process.env.FLIQ_CONCURRENT_SCANS, nodeEnv = process.env.NODE_ENV) {
+  const defaultVal = nodeEnv === 'production' ? 1 : 3;
+  if (envVal === undefined || envVal === null || String(envVal).trim() === '') {
+    return defaultVal;
+  }
+  const parsed = Number(String(envVal).trim());
+  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 3) {
+    return defaultVal;
+  }
+  return parsed;
+}
+
+const MAX_CONCURRENT_SCANS = parseConcurrentScans();
 let activeScanCount = 0;
 const scanWaitQueue = [];
 
@@ -398,7 +410,17 @@ async function executeTest(job) {
     const { chromium } = await import('playwright');
     const { url } = await validateTarget(job.url);
     await update({ status: 'running', progress: 10, stage: 'Initializing browser', currentUrl: job.url, issues: [] });
-    browser = await chromium.launch({ headless: true, args: ['--disable-dev-shm-usage', '--no-sandbox'] });
+    browser = await chromium.launch({
+      headless: true,
+      args: [
+        '--disable-dev-shm-usage',
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-gpu',
+        '--no-zygote',
+        '--no-first-run'
+      ]
+    });
     const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
     const issues = [];
     const mainOrigin = new URL(url).origin;
@@ -1032,6 +1054,8 @@ async function executeTest(job) {
       message = 'Playwright is not installed. Run: npm install && npx playwright install chromium';
     } else if (e.message && (e.message.includes("Executable doesn't exist") || e.message.includes("npx playwright install"))) {
       message = 'Playwright Chromium browser is not installed. Run: npx playwright install chromium';
+    } else if (e.message && (e.message.includes('Target page, context or browser has been closed') || e.message.includes('Crash') || e.message.includes('OOM') || e.message.includes('SIGKILL') || e.message.includes('Out of memory') || e.message.includes('browser has disconnected'))) {
+      message = 'Scan memory limit exceeded or browser process crashed. Please retry with a lighter target page or restart the worker.';
     }
     await update({ status: 'failed', progress: 0, stage: 'Failed', error: message, completedAt: new Date().toISOString() });
   } finally {
@@ -1047,9 +1071,11 @@ export function isOriginAllowed(origin, allowedOriginsEnv = process.env.FLIQ_ALL
   if (!origin) return false;
   const o = origin.toLowerCase().trim();
 
-  // Allow localhost & loopback for development and tests
-  if (o.startsWith('http://localhost:') || o.startsWith('http://127.0.0.1:') || o === 'http://localhost' || o === 'http://127.0.0.1') {
-    return true;
+  // Allow localhost & loopback ONLY in non-production for local development and tests
+  if (process.env.NODE_ENV !== 'production') {
+    if (o.startsWith('http://localhost:') || o.startsWith('http://127.0.0.1:') || o === 'http://localhost' || o === 'http://127.0.0.1') {
+      return true;
+    }
   }
 
   // If no allowed origins specified in non-production, permit all for local development
@@ -1356,7 +1382,8 @@ const server=http.createServer(async(req,res)=>{
       res.writeHead(200, {
         'content-type': 'text/event-stream',
         'cache-control': 'no-cache, no-transform',
-        'connection': 'keep-alive'
+        'connection': 'keep-alive',
+        'x-accel-buffering': 'no'
       });
       res.write(': connected\n\n');
 

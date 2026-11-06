@@ -49,7 +49,8 @@ firebaseStatusPromise = (async () => {
   try {
     const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
     const timeoutId = controller ? setTimeout(() => controller.abort(), 1200) : null;
-    const hr = await fetch('/api/health', { signal: controller?.signal, cache: 'no-store' });
+    const healthUrl = (getApiBase() ? getApiBase() : '') + '/api/health';
+    const hr = await fetch(healthUrl, { signal: controller?.signal, cache: 'no-store' });
     if (timeoutId) clearTimeout(timeoutId);
     const text = await hr.text();
     if (text.startsWith('{')) health = JSON.parse(text);
@@ -1781,7 +1782,7 @@ async function progressPage(id) {
 
           <div class="live-preview-box" id="live-preview-box">
             ${t.liveScreenshot ? `
-              <img class="live-preview-img" src="/api/tests/${esc(id)}/live-screenshot?t=${Date.now()}" alt="Live Playwright Browser View">
+              <img class="live-preview-img" src="${getApiBase() ? getApiBase() : ''}/api/tests/${esc(id)}/live-screenshot?t=${Date.now()}" alt="Live Playwright Browser View">
               ${highlightHtml}
             ` : `
               <div class="serverless-audit-card">

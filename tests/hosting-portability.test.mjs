@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isOriginAllowed } from '../server.js';
+import { isOriginAllowed, parseConcurrentScans } from '../server.js';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
@@ -85,9 +85,71 @@ describe('FLIQ Multi-Platform Hosting Portability Test Suite', () => {
       assert.equal(isOriginAllowed('https://fliq.io', allowedEnv), true);
       assert.equal(isOriginAllowed('https://app.fliq.io', allowedEnv), true);
     });
+
+    test('Permits exact FLIQ Cloudflare Pages stable production domain and deployment alias', () => {
+      const prodEnv = 'https://fliq-app-ava.pages.dev,https://66ee22bf.fliq-app-ava.pages.dev';
+      assert.equal(isOriginAllowed('https://fliq-app-ava.pages.dev', prodEnv), true);
+      assert.equal(isOriginAllowed('https://66ee22bf.fliq-app-ava.pages.dev', prodEnv), true);
+      assert.equal(isOriginAllowed('https://other.pages.dev', prodEnv), false);
+      assert.equal(isOriginAllowed('https://attacker.com', prodEnv), false);
+
+      // Preferred standalone stable production domain configuration
+      const stableOnlyEnv = 'https://fliq-app-ava.pages.dev';
+      assert.equal(isOriginAllowed('https://fliq-app-ava.pages.dev', stableOnlyEnv), true);
+      assert.equal(isOriginAllowed('https://66ee22bf.fliq-app-ava.pages.dev', stableOnlyEnv), false);
+    });
+
+    test('Rejects localhost in production when not in FLIQ_ALLOWED_ORIGINS', () => {
+      const prevEnv = process.env.NODE_ENV;
+      try {
+        process.env.NODE_ENV = 'production';
+        const prodEnv = 'https://fliq-app-ava.pages.dev,https://66ee22bf.fliq-app-ava.pages.dev';
+        assert.equal(isOriginAllowed('http://localhost:3000', prodEnv), false);
+        assert.equal(isOriginAllowed('http://127.0.0.1:3000', prodEnv), false);
+      } finally {
+        process.env.NODE_ENV = prevEnv;
+      }
+    });
   });
 
-  describe('3. Centralized API Configuration & Secret Isolation', () => {
+  describe('3. FLIQ_CONCURRENT_SCANS Validation (server.js)', () => {
+    test('Defaults to 1 in production and 3 in development when undefined or empty', () => {
+      assert.equal(parseConcurrentScans(undefined, 'production'), 1);
+      assert.equal(parseConcurrentScans('', 'production'), 1);
+      assert.equal(parseConcurrentScans(undefined, 'development'), 3);
+      assert.equal(parseConcurrentScans('', 'development'), 3);
+    });
+
+    test('Accepts valid positive integers up to maximum of 3', () => {
+      assert.equal(parseConcurrentScans('1', 'production'), 1);
+      assert.equal(parseConcurrentScans('2', 'production'), 2);
+      assert.equal(parseConcurrentScans('3', 'production'), 3);
+      assert.equal(parseConcurrentScans('  2  ', 'development'), 2);
+    });
+
+    test('Enforces maximum concurrency of 3, falling back to environment default if exceeded', () => {
+      assert.equal(parseConcurrentScans('4', 'production'), 1);
+      assert.equal(parseConcurrentScans('5', 'development'), 3);
+      assert.equal(parseConcurrentScans('100', 'production'), 1);
+    });
+
+    test('Rejects negative values, zero, and floats, falling back to environment default', () => {
+      assert.equal(parseConcurrentScans('-1', 'production'), 1);
+      assert.equal(parseConcurrentScans('-5', 'development'), 3);
+      assert.equal(parseConcurrentScans('0', 'production'), 1);
+      assert.equal(parseConcurrentScans('0', 'development'), 3);
+      assert.equal(parseConcurrentScans('1.5', 'production'), 1);
+      assert.equal(parseConcurrentScans('2.7', 'development'), 3);
+    });
+
+    test('Rejects non-numeric strings, NaN, and invalid inputs safely', () => {
+      assert.equal(parseConcurrentScans('abc', 'production'), 1);
+      assert.equal(parseConcurrentScans('invalid', 'development'), 3);
+      assert.equal(parseConcurrentScans(null, 'production'), 1);
+    });
+  });
+
+  describe('4. Centralized API Configuration & Secret Isolation', () => {
     test('Client firebase-config.json never leaks backend secrets', () => {
       const cfgPath = path.join(root, 'firebase-config.json');
       if (fs.existsSync(cfgPath)) {
@@ -110,7 +172,7 @@ describe('FLIQ Multi-Platform Hosting Portability Test Suite', () => {
     });
   });
 
-  describe('4. Frontend App API Resolution (app.js)', () => {
+  describe('5. Frontend App API Resolution (app.js)', () => {
     test('app.js defines centralized getApiBase() supporting FLIQ_BACKEND_URL and relative /api', () => {
       const appJsPath = path.join(root, 'app.js');
       const content = fs.readFileSync(appJsPath, 'utf8');

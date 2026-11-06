@@ -52,7 +52,9 @@ Set these on your backend container host (Cloud Run, Railway, Render, Fly.io, or
 | `NODE_ENV` | **Yes** | Set to `production`. Automatically disables all internal test routes with 404 and enforces strict CORS. |
 | `PORT` | Optional | HTTP port to bind (default: `3000`). Cloud providers like Cloud Run, Render, and Railway set this automatically. |
 | `HOST` | Optional | Host interface to bind (default: `0.0.0.0`). |
-| `FLIQ_ALLOWED_ORIGINS` | **Yes** | Comma-separated list of allowed frontend origins (e.g. `https://my-frontend.pages.dev,*.pages.dev,https://fliq.vercel.app,https://fliq.io`). |
+| `FLIQ_ALLOWED_ORIGINS` | **Yes** | Comma-separated list of allowed frontend origins: `https://fliq-app-ava.pages.dev,https://66ee22bf.fliq-app-ava.pages.dev` (stable production domain + current deployment alias). Do not use broad wildcards in production. |
+| `FLIQ_CONCURRENT_SCANS` | Optional | Maximum concurrent Playwright browser scans (default: `1` in production to stay under 512 MB RAM, `3` in development). Accepts positive integers from 1 to 3; values above 3 or invalid entries revert to the environment default. |
+| `FLIQ_MAX_ACTIVE_TESTS` | Optional | Maximum active scans permitted per user simultaneously (default: `1`). |
 | `FLIQ_DATA_DIR` | Optional | Path for persistent test database and screenshots (default: `./data`). Point to a persistent volume mount (e.g. `/data` or `/mnt/storage`). |
 | `FIREBASE_PROJECT_ID` | **Yes** | Firebase project ID for token verification and Firestore. |
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | **Recommended** | Full inline JSON string of your Firebase service account private key. |
@@ -64,35 +66,45 @@ Set these on your backend container host (Cloud Run, Railway, Render, Fly.io, or
 
 ## 3. Backend Deployment
 
-### Option A: Docker Container (Google Cloud Run / Railway / Fly.io / Render / AWS ECS)
+### Option A: Render Free Web Service (Node.js or Docker)
 
-The project includes a production-ready `Dockerfile` based on `node:20-bookworm-slim` with all system libraries required for headless Chromium.
+1. **Create Web Service on Render**:
+   - Go to [dashboard.render.com](https://dashboard.render.com) -> **New +** -> **Web Service**.
+   - Connect your Git repository (`FLIQ` / `https://github.com/abhi79780/Fliq`).
+   - Select **Free** instance type (512 MB RAM).
 
-1. **Build and test the Docker container locally**:
-   ```bash
-   docker build -t fliq-backend .
-   docker run -p 3000:3000 -e NODE_ENV=production -e FIREBASE_PROJECT_ID=fliq-61989 fliq-backend
-   ```
-
-2. **Deploy to Google Cloud Run**:
-   ```bash
-   gcloud run deploy fliq-backend \
-     --source . \
-     --platform managed \
-     --region us-central1 \
-     --allow-unauthenticated \
-     --set-env-vars NODE_ENV=production,FIREBASE_PROJECT_ID=fliq-61989,FLIQ_RUN_SUITES_ON_START=false,FLIQ_ALLOWED_ORIGINS="https://your-frontend.pages.dev,*.pages.dev"
-   ```
-
-3. **Deploy to Railway / Render / Fly.io**:
-   - Connect the Git repository.
-   - The platform will automatically detect `Dockerfile` or `package.json`.
-   - Set the environment variables listed in Section 2.
-   - For Render/Railway with `package.json`:
-     - **Build Command**: `npm ci --only=production && npx playwright install --with-deps chromium && npm run build`
+2. **Choose Runtime Environment**:
+   - **Method 1: Native Node Runtime**:
+     - **Runtime**: `Node` (Node.js 20+)
+     - **Build Command**: `npm ci && npx playwright install --with-deps chromium`
      - **Start Command**: `node server.js`
+     - **Health Check Path**: `/api/health`
+     - *Note on Chromium System Libraries*: Playwright requires underlying Linux OS packages (`libgbm1`, `libnss3`, `libasound2`, etc.). Running with `--with-deps` installs them.
+   - **Method 2: Docker Runtime (Recommended for Guaranteed Chromium Libraries)**:
+     - **Runtime**: `Docker` (Uses repository's production [`Dockerfile`](file:///c:/FLIQ/Dockerfile)).
+     - Render automatically builds the Dockerfile, which contains all 22 required Debian system libraries for headless Chromium.
+     - Also 100% Free tier eligible on Render.
 
-### Option B: Linux VM (Ubuntu 22.04+ / Debian 12) with PM2 or systemd
+3. **Set Environment Variables in Render Dashboard**:
+   - `NODE_ENV`: `production`
+   - `FIREBASE_PROJECT_ID`: `fliq-61989`
+   - `FLIQ_ALLOWED_ORIGINS`: `https://fliq-app-ava.pages.dev,https://66ee22bf.fliq-app-ava.pages.dev` *(Stable production domain + current deployment alias — no broad wildcards)*
+   - `FLIQ_MAX_ACTIVE_TESTS`: `1`
+   - `FLIQ_CONCURRENT_SCANS`: `1`
+   - `FLIQ_RUN_SUITES_ON_START`: `false`
+   - `FIREBASE_SERVICE_ACCOUNT_JSON`: `{"type":"service_account",...}` *(paste entire JSON string from Google Cloud Console)*
+
+4. **Verify Playwright and Deployment**:
+   - Once deployed, check `GET /api/health`.
+   - Verify `playwrightConfigured: true` in the JSON response.
+   - Run a live test scan against `https://example.com` to verify an actual browser launch succeeds on Render before claiming production readiness.
+
+5. **Connect Cloudflare Pages to Backend**:
+   - After Render assigns your public service URL (e.g., `https://fliq-api.onrender.com`):
+   - In Cloudflare Pages -> Settings -> Environment variables -> set `FLIQ_BACKEND_URL=https://fliq-api.onrender.com`.
+   - Redeploy Cloudflare Pages. Your frontend will immediately communicate with the live backend!
+
+### Option B: Docker Container (Cloud Run / Railway / Fly.io / VPS)
 
 1. **Install Node.js 20 LTS**:
    ```bash
