@@ -192,11 +192,35 @@ if (fs.existsSync(functionsDir)) {
   }
 }
 
-// 7. Ensure SPA routing configurations exist for Cloudflare Pages, Netlify, and Vercel
-const spaRedirect = '/*    /index.html   200\n';
-fs.writeFileSync(path.join(root, '_redirects'), spaRedirect, 'utf8');
-fs.writeFileSync(path.join(publicDir, '_redirects'), spaRedirect, 'utf8');
-console.log('[FLIQ Build] Wrote _redirects for Cloudflare Pages and Netlify SPA routing.');
+// 7. Ensure clean _redirects file for static hosting without conflicting 200 rewrite loops
+const cleanRedirectsContent = `# FLIQ Static Routing Configuration
+# Client-side SPA routing is handled natively by Cloudflare Pages (via 200.html / index.html),
+# Netlify (via netlify.toml), and Vercel (via vercel.json).
+# Conflicting 200 rewrite rules are omitted to prevent Cloudflare redirect loops [code: 100324].
+`;
+fs.writeFileSync(path.join(root, '_redirects'), cleanRedirectsContent, 'utf8');
+fs.writeFileSync(path.join(publicDir, '_redirects'), cleanRedirectsContent, 'utf8');
+console.log('[FLIQ Build] Wrote clean _redirects without 200 rewrite loops.');
+
+// 8. Generate 200.html for native Cloudflare Pages SPA fallback handling
+const indexHtmlPath = path.join(root, 'index.html');
+if (fs.existsSync(indexHtmlPath)) {
+  const indexContent = fs.readFileSync(indexHtmlPath, 'utf8');
+  fs.writeFileSync(path.join(root, '200.html'), indexContent, 'utf8');
+  fs.writeFileSync(path.join(publicDir, '200.html'), indexContent, 'utf8');
+  console.log('[FLIQ Build] Generated 200.html for native Cloudflare Pages SPA fallback.');
+}
+
+// 9. Ensure Cloudflare Pages wrangler.jsonc configuration exists
+const wranglerPath = path.join(root, 'wrangler.jsonc');
+const pagesWranglerConfig = {
+  $schema: "node_modules/wrangler/config-schema.json",
+  name: "fliq",
+  compatibility_date: "2026-11-04",
+  pages_build_output_dir: "."
+};
+fs.writeFileSync(wranglerPath, JSON.stringify(pagesWranglerConfig, null, 2), 'utf8');
+console.log('[FLIQ Build] Wrote wrangler.jsonc for Cloudflare Pages (pages_build_output_dir: .).');
 
 const vercelConfigPath = path.join(root, 'vercel.json');
 if (!fs.existsSync(vercelConfigPath)) {

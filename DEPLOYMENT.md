@@ -123,20 +123,37 @@ The project includes a production-ready `Dockerfile` based on `node:20-bookworm-
 
 The static frontend can be deployed to any provider. To switch providers, configure your repository with the new provider and provide `FLIQ_BACKEND_URL`—no code changes needed.
 
-### A. Cloudflare Pages
-1. Go to Cloudflare Dashboard $\rightarrow$ **Workers & Pages** $\rightarrow$ **Create application** $\rightarrow$ **Pages** $\rightarrow$ **Connect to Git**.
+### A. Cloudflare Pages (Exclusive Frontend Hosting)
+
+FLIQ is hosted on Cloudflare Pages using native Single-Page Application (SPA) routing:
+- **Build Output Directory**: `.` (Root)
+- **Native SPA Fallback**: Automatically served via `200.html` and `index.html` (no looping 200 rewrite rules in `_redirects`).
+- **Configuration**: Managed via `wrangler.jsonc` with `pages_build_output_dir: "."`.
+
+#### 1. Cloudflare Dashboard Setup (Git-Integrated Deployment)
+1. Go to **Cloudflare Dashboard** $\rightarrow$ **Workers & Pages** $\rightarrow$ **Create application** $\rightarrow$ select the **Pages** tab (do **NOT** select Workers) $\rightarrow$ **Connect to Git**.
 2. Select your repository.
 3. Configure Build Settings:
-   - **Framework preset**: None
+   - **Framework preset**: `None`
    - **Build command**: `npm run build`
-   - **Build output directory**: `.` (Root)
-4. Add Environment Variables:
-   - `FLIQ_BACKEND_URL`: `https://your-backend-domain.com`
+   - **Build output directory**: `.`
+4. Add Environment Variables (under **Settings** $\rightarrow$ **Environment variables**):
+   - `FLIQ_BACKEND_URL`: `https://your-backend-api.com` (leave blank if running same-origin)
    - `FIREBASE_PROJECT_ID`: `fliq-61989`
    - `FIREBASE_WEB_API_KEY`: `<client-web-api-key>`
    - `FIREBASE_AUTH_DOMAIN`: `fliq-61989.firebaseapp.com`
    - `FIREBASE_APP_ID`: `1:638791431564:web:84087d00b1a87a0829d2a9`
-5. Click **Save and Deploy**. Cloudflare uses `_redirects` for SPA routing.
+5. Click **Save and Deploy**.
+
+#### 2. Manual CLI Deployment via Wrangler Pages
+If deploying directly from your local terminal or CI/CD without Git integration:
+```bash
+# Step 1: Run the build to generate 200.html, configs, and assets
+npm run build
+
+# Step 2: Deploy to Cloudflare Pages (use `pages deploy`, never `wrangler deploy`)
+npx wrangler pages deploy . --project-name fliq
+```
 
 ### B. Vercel
 1. Go to Vercel Dashboard $\rightarrow$ **Add New Project** $\rightarrow$ Import your Git repository.

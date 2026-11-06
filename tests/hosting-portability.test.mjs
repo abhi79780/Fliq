@@ -10,18 +10,32 @@ const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 describe('FLIQ Multi-Platform Hosting Portability Test Suite', () => {
 
   describe('1. Static Hosting Configuration Files', () => {
-    test('Root _redirects file exists for Cloudflare Pages and Netlify SPA routing', () => {
-      const redirectsPath = path.join(root, '_redirects');
-      assert.equal(fs.existsSync(redirectsPath), true, '_redirects must exist at repository root');
-      const content = fs.readFileSync(redirectsPath, 'utf8');
-      assert.match(content, /\/\*\s+\/index\.html\s+200/, '_redirects must route /* to /index.html with status 200');
+    test('Root and public _redirects files omit conflicting 200 rewrite rules to avoid Cloudflare code 100324', () => {
+      const rootRedirectsPath = path.join(root, '_redirects');
+      assert.equal(fs.existsSync(rootRedirectsPath), true, '_redirects must exist at repository root');
+      const rootContent = fs.readFileSync(rootRedirectsPath, 'utf8');
+      assert.equal(rootContent.includes(' 200') || rootContent.includes('\t200'), false, 'Root _redirects must not contain 200 rewrite rules that cause loop error 100324');
+
+      const publicRedirectsPath = path.join(root, 'public', '_redirects');
+      assert.equal(fs.existsSync(publicRedirectsPath), true, 'public/_redirects must exist');
+      const publicContent = fs.readFileSync(publicRedirectsPath, 'utf8');
+      assert.equal(publicContent.includes(' 200') || publicContent.includes('\t200'), false, 'public/_redirects must not contain 200 rewrite rules that cause loop error 100324');
     });
 
-    test('Public _redirects file exists for static publish directories', () => {
-      const redirectsPath = path.join(root, 'public', '_redirects');
-      assert.equal(fs.existsSync(redirectsPath), true, 'public/_redirects must exist');
-      const content = fs.readFileSync(redirectsPath, 'utf8');
-      assert.match(content, /\/\*\s+\/index\.html\s+200/, 'public/_redirects must route /* to /index.html with status 200');
+    test('200.html exists in root and public for native Cloudflare Pages SPA fallback', () => {
+      const root200Path = path.join(root, '200.html');
+      assert.equal(fs.existsSync(root200Path), true, '200.html must exist at repository root');
+      const public200Path = path.join(root, 'public', '200.html');
+      assert.equal(fs.existsSync(public200Path), true, 'public/200.html must exist');
+    });
+
+    test('wrangler.jsonc is configured exclusively for Cloudflare Pages without Workers assets', () => {
+      const wranglerPath = path.join(root, 'wrangler.jsonc');
+      assert.equal(fs.existsSync(wranglerPath), true, 'wrangler.jsonc must exist at repository root');
+      const raw = fs.readFileSync(wranglerPath, 'utf8');
+      const cfg = JSON.parse(raw);
+      assert.equal(cfg.pages_build_output_dir, '.', 'wrangler.jsonc must set pages_build_output_dir to .');
+      assert.equal('assets' in cfg, false, 'wrangler.jsonc must not contain Workers assets configuration');
     });
 
     test('vercel.json exists with valid SPA rewrite configuration', () => {
