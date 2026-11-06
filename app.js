@@ -339,11 +339,20 @@ await navigatePostAuth();
 }catch(error){
 console.error('[FLIQ] Google sign-in failed:',error?.code,error?.message,error);const isSelfDescribing=error.message?.startsWith('Firebase Web Authentication')||error.message?.startsWith('Firebase Web App');const friendly=friendlyFirebaseAuthError(error);
 const hasMapping=friendly!=='Firebase could not complete the request. Check your details and try again.';message.textContent=isSelfDescribing?error.message:(hasMapping?friendly:`${friendly} (${error?.code||error?.message||'unknown error'})`);buttons.forEach(x=>x.disabled=false);}}function isProtected(p){if(p==='/dashboard'||p==='/onboarding'||p==='/checkout'||p.startsWith('/checkout/'))return true;if(p.startsWith('/dashboard/tests/'))return false;return p.startsWith('/dashboard/');}
-const API_BASE = (typeof window !== 'undefined' && (window.__FLIQ_FIREBASE_CONFIG__?.apiUrl || window.__FLIQ_API_URL__)) || '';
+function getApiBase() {
+  if (typeof window === 'undefined') return '';
+  const candidate = (window.__FLIQ_API_URL__ || window.__FLIQ_FIREBASE_CONFIG__?.apiUrl || '').trim();
+  return candidate ? candidate.replace(/\/+$/, '') : '';
+}
 
 async function authHeaders(){
-  const testUid=localStorage.getItem('fliqTestUid');
-  if(testUid) return {'x-fliq-test-uid':testUid};
+  const isLocalHost = typeof window !== 'undefined' && (
+    window.location.hostname === 'localhost' ||
+    window.location.hostname === '127.0.0.1' ||
+    window.location.hostname === '[::1]'
+  );
+  const testUid = localStorage.getItem('fliqTestUid');
+  if(testUid && isLocalHost) return {'x-fliq-test-uid': testUid};
   let user=firebaseAuth?.currentUser||resolvedAuthUser;
   if(!user&&firebaseWebConfigured){
     try{ user=await getResolvedAuthState(2500); }catch{}
@@ -359,7 +368,8 @@ async function authHeaders(){
 }
 async function apiFetch(url,options={}){
   await firebaseStatusPromise;
-  const resolvedUrl = (url.startsWith('/api') && API_BASE) ? (API_BASE.replace(/\/+$/, '') + url) : url;
+  const base = getApiBase();
+  const resolvedUrl = (url.startsWith('/api') && base) ? (base + url) : url;
   const headers = { ...options.headers, ...(await authHeaders()) };
   return fetch(resolvedUrl, { ...options, headers });
 }
@@ -1104,7 +1114,7 @@ function auth(signup=false){
             </button>
             <div id="oauth-message" class="oauth-message" role="status" aria-live="polite"></div>
 
-            <div class="auth-footer-switch">
+            <div class="auth-footer-switch auth-switch">
               ${signup ? `Already have an account? <a href="/login${authQueryString}" data-route>Sign in.</a>` : `Not a member? <a href="/signup${authQueryString}" data-route>Create an account.</a>`}
             </div>
           </div>
@@ -1167,7 +1177,7 @@ function forgot(){
               <div id="reset-message" role="status" aria-live="polite"></div>
             </form>
 
-            <div class="auth-footer-switch" style="margin-top: 28px;">
+            <div class="auth-footer-switch auth-switch" style="margin-top: 28px;">
               <a href="/login${forgotQuery}" data-route>← Back to sign in</a>
             </div>
           </div>
@@ -1357,7 +1367,11 @@ async function tests(){
     } catch (parseErr) {
       console.error('/api/tests returned non-JSON:', text.slice(0, 250));
       testLoadError = true;
-      testLoadMessage = 'Could not contact the FLIQ server. The API returned an invalid response.';
+      if (text.trim().startsWith('<') || text.includes('<!DOCTYPE') || text.includes('<html')) {
+        testLoadMessage = 'Could not contact the FLIQ API server. Received HTML instead of JSON. If hosting the frontend on Cloudflare Pages, Vercel, or Netlify, verify that FLIQ_BACKEND_URL is set in your build environment to your running backend server.';
+      } else {
+        testLoadMessage = 'Could not contact the FLIQ server. The API returned an invalid response.';
+      }
       console.groupEnd();
       return null;
     }
@@ -1723,7 +1737,7 @@ async function progressPage(id) {
   }
 
   return appShell(`
-    <div class="live-inspection-shell">
+    <div class="live-inspection-shell progress-shell">
       <div class="live-top-bar">
         <div class="live-top-row">
           <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
@@ -1800,7 +1814,7 @@ async function progressPage(id) {
                 const statusClass = isDone ? 'done' : isActive ? 'active' : 'pending';
                 const icon = isDone ? '✓' : isActive ? '⚡' : (idx + 1);
                 return `
-                  <div class="live-step ${statusClass}" title="${esc(s.desc)}">
+                  <div class="live-step step ${statusClass}" title="${esc(s.desc)}">
                     <span class="live-step-icon">${icon}</span>
                     <span>${esc(s.name)}</span>
                   </div>
@@ -3028,7 +3042,16 @@ async function runTest(form){
 
   // Authentication-first workflow: unauthenticated visitors are redirected to login/signup
   await firebaseStatusPromise;
-  const isAuthed = Boolean(firebaseAuth?.currentUser || localStorage.getItem('fliqTestUid') || (!firebaseWebConfigured && localStorage.getItem('fliqEmail')));
+  const isLocalHost = typeof window !== 'undefined' && (
+    window.location.hostname === 'localhost' ||
+    window.location.hostname === '127.0.0.1' ||
+    window.location.hostname === '[::1]'
+  );
+  const isAuthed = Boolean(
+    firebaseAuth?.currentUser ||
+    resolvedAuthUser ||
+    (isLocalHost && localStorage.getItem('fliqTestUid'))
+  );
   if (!isAuthed) {
     try { sessionStorage.setItem('fliqPendingUrl', targetUrl); } catch {}
     modal = false;
@@ -3105,7 +3128,9 @@ function subscribeLiveScan(id) {
 
   if (typeof EventSource !== 'undefined') {
     try {
-      const sse = new EventSource(`/api/tests/${id}/events`);
+      const base = getApiBase();
+      const sseUrl = (base ? base : '') + `/api/tests/${id}/events`;
+      const sse = new EventSource(sseUrl);
       liveEventSource = sse;
       sse.addEventListener('scan-update', (e) => {
         if (!location.pathname.includes(`/tests/${id}`)) {

@@ -53,12 +53,13 @@ const config = {
   apiUrl
 };
 
-console.log('[FLIQ Build] Preparing client configuration for Netlify deployment...');
+console.log('[FLIQ Build] Preparing client configuration for multi-platform deployment (Cloudflare Pages / Vercel / Netlify / Custom)...');
 console.log(`[FLIQ Build] Project ID: ${projectId}`);
 console.log(`[FLIQ Build] Auth Domain: ${authDomain}`);
 console.log(`[FLIQ Build] API Key present: ${Boolean(apiKey)} (${apiKey ? apiKey.slice(0, 6) + '...' : 'not set'})`);
 console.log(`[FLIQ Build] App ID present: ${Boolean(appId)}`);
 console.log(`[FLIQ Build] Sender ID present: ${Boolean(messagingSenderId)}`);
+console.log(`[FLIQ Build] Backend API URL: ${apiUrl || '(relative /api same-origin)'}`);
 
 // 1. Generate firebase-config.js (loaded synchronously in index.html before app.js)
 const jsContent = `// Auto-generated client Firebase Web configuration
@@ -191,4 +192,25 @@ if (fs.existsSync(functionsDir)) {
   }
 }
 
-console.log('[FLIQ Build] Complete. Frontend is ready for Netlify.');
+// 7. Ensure SPA routing configurations exist for Cloudflare Pages, Netlify, and Vercel
+const spaRedirect = '/*    /index.html   200\n';
+fs.writeFileSync(path.join(root, '_redirects'), spaRedirect, 'utf8');
+fs.writeFileSync(path.join(publicDir, '_redirects'), spaRedirect, 'utf8');
+console.log('[FLIQ Build] Wrote _redirects for Cloudflare Pages and Netlify SPA routing.');
+
+const vercelConfigPath = path.join(root, 'vercel.json');
+if (!fs.existsSync(vercelConfigPath)) {
+  const vercelConfig = {
+    version: 2,
+    rewrites: [
+      {
+        source: '/((?!api/.*|.*\\..*).*)',
+        destination: '/index.html'
+      }
+    ]
+  };
+  fs.writeFileSync(vercelConfigPath, JSON.stringify(vercelConfig, null, 2), 'utf8');
+  console.log('[FLIQ Build] Wrote vercel.json for Vercel SPA routing.');
+}
+
+console.log('[FLIQ Build] Complete. Frontend is ready for deployment on Cloudflare Pages, Vercel, Netlify, or custom hosting.');

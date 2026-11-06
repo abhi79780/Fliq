@@ -48,7 +48,7 @@ try {
 } catch (e) {
   if (e.code !== 'ENOENT') console.error('[FLIQ] manual .env read warning:', e.message);
 }
-const dataDir = path.join(root, 'data');
+const dataDir = process.env.FLIQ_DATA_DIR ? path.resolve(process.env.FLIQ_DATA_DIR) : path.join(root, 'data');
 await fs.mkdir(dataDir, { recursive: true });
 const dbFile = path.join(dataDir, 'tests.json');
 let adminApp=null;
@@ -141,12 +141,26 @@ const getMissingFirebaseWebFields = () => {
   return missing;
 };
 async function verifiedUser(req, options = {}) {
-  // Support loopback test suite headers for multi-tenant verification
+  // Support loopback test suite headers for multi-tenant verification in isolated test/dev environments only
   const remoteIp = req.socket.remoteAddress;
-  const isLoopback = remoteIp === '127.0.0.1' || remoteIp === '::1' || remoteIp === '::ffff:127.0.0.1';
-  if (isLoopback && req.headers['x-fliq-test-uid']) {
+  const isDirectLoopback = (
+    remoteIp === '127.0.0.1' ||
+    remoteIp === '::1' ||
+    remoteIp === '::ffff:127.0.0.1'
+  );
+  // Ensure the request did NOT arrive through any external reverse proxy
+  const hasProxyHeader = Boolean(
+    req.headers['x-forwarded-for'] ||
+    req.headers['x-real-ip'] ||
+    req.headers['cf-connecting-ip'] ||
+    req.headers['true-client-ip'] ||
+    req.headers['forwarded']
+  );
+  const isTestAllowed = process.env.NODE_ENV !== 'production' || process.env.FLIQ_ALLOW_TEST_UID === 'true';
+
+  if (isDirectLoopback && !hasProxyHeader && isTestAllowed && req.headers['x-fliq-test-uid']) {
     const testUid = String(req.headers['x-fliq-test-uid']).trim();
-    if (testUid) {
+    if (testUid && /^[a-zA-Z0-9_-]{1,64}$/.test(testUid)) {
       return { uid: testUid, email: `${testUid}@test.fliq.local`, isAnonymous: false };
     }
   }
@@ -172,6 +186,9 @@ async function verifiedUser(req, options = {}) {
       }
       const projFlag = expectedProjectId ? ` --project=${expectedProjectId}` : '';
       throw Object.assign(new Error(`Firebase Admin credentials are not configured. Run: gcloud auth application-default login${projFlag} then restart the server, or add a service-account key to .env as GOOGLE_APPLICATION_CREDENTIALS=path/to/key.json`), { status: 503 });
+    }
+    if (process.env.NODE_ENV === 'production') {
+      throw Object.assign(new Error('Sign in to continue.'), { status: 401 });
     }
     return { uid: 'local', isAnonymous: false };
   }
@@ -1025,8 +1042,53 @@ async function executeTest(job) {
     releaseScanSlot();
   }
 }
+
+export function isOriginAllowed(origin, allowedOriginsEnv = process.env.FLIQ_ALLOWED_ORIGINS) {
+  if (!origin) return false;
+  const o = origin.toLowerCase().trim();
+
+  // Allow localhost & loopback for development and tests
+  if (o.startsWith('http://localhost:') || o.startsWith('http://127.0.0.1:') || o === 'http://localhost' || o === 'http://127.0.0.1') {
+    return true;
+  }
+
+  // If no allowed origins specified in non-production, permit all for local development
+  if (!allowedOriginsEnv || !allowedOriginsEnv.trim()) {
+    return process.env.NODE_ENV !== 'production';
+  }
+
+  const allowedList = allowedOriginsEnv.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+  for (const pattern of allowedList) {
+    if (pattern === o) return true;
+    // Wildcard domain match (e.g. *.pages.dev, *.vercel.app, *.netlify.app)
+    if (pattern.startsWith('*.')) {
+      const suffix = pattern.slice(1);
+      try {
+        const u = new URL(o);
+        if (u.hostname.endsWith(suffix) || ('.' + u.hostname) === suffix) return true;
+      } catch {}
+    }
+  }
+  return false;
+}
+
 const server=http.createServer(async(req,res)=>{
-  const origin=req.headers.origin; if(origin)res.setHeader('access-control-allow-origin',origin); res.setHeader('vary','Origin'); res.setHeader('access-control-allow-headers','content-type,authorization'); res.setHeader('access-control-allow-methods','GET,POST,OPTIONS'); if(req.method==='OPTIONS'){res.writeHead(204);return res.end();}
+  const origin = req.headers.origin;
+  if (origin && isOriginAllowed(origin)) {
+    res.setHeader('access-control-allow-origin', origin);
+    res.setHeader('access-control-allow-credentials', 'true');
+    res.setHeader('vary', 'Origin');
+  }
+  res.setHeader('access-control-allow-headers', 'content-type, authorization, x-fliq-test-uid');
+  res.setHeader('access-control-allow-methods', 'GET, POST, DELETE, OPTIONS');
+  if (req.method === 'OPTIONS') {
+    if (origin && !isOriginAllowed(origin)) {
+      res.writeHead(403, { 'content-type': 'text/plain' });
+      return res.end('CORS origin forbidden');
+    }
+    res.writeHead(204);
+    return res.end();
+  }
   const pathname=new URL(req.url,'http://localhost').pathname;
   if(pathname==='/firebase-config.js'&&req.method==='GET'){
     const cfg = getFirebaseWebConfig();
@@ -1039,6 +1101,39 @@ const server=http.createServer(async(req,res)=>{
   if(pathname.startsWith('/api/')){
     if(pathname==='/api/firebase-config'&&req.method==='GET'){const missing=getMissingFirebaseWebFields();return send(res,200,{configured:missing.length===0,missing,config:missing.length===0?getFirebaseWebConfig():null});}
     if(pathname==='/api/health'){const firebaseWebMissing=getMissingFirebaseWebFields(),firebaseAdminConfigured=Boolean(adminApp);const credentialType=adminApp?(process.env.FIREBASE_SERVICE_ACCOUNT_JSON?'service-account-env':process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim()?'service-account-file':'application-default-credentials'):'none';return send(res,200,{ok:true,playwrightConfigured:playwrightAvailable,firebaseConfigured:Boolean(firebaseAdminConfigured&&firebaseWebMissing.length===0),firebaseWebConfigured:firebaseWebMissing.length===0,firebaseWebMissing,firebaseAdminConfigured,credentialType,firebaseMissing:[...firebaseWebMissing,...(firebaseAdminConfigured?[]:[expectedProjectId?`Valid ${expectedProjectId} server credential (Firebase Admin) — run: gcloud auth application-default login --project=${expectedProjectId}`:'Valid Firebase Admin server credential required — set FIREBASE_PROJECT_ID and run: gcloud auth application-default login'])],authMode:firebaseAdminConfigured?'firebase':'local-preview'});}
+
+    // Security Gate: Test routes are strictly restricted to direct loopback requests in non-production environments
+    const isTestRoute = [
+      '/api/regression-tests',
+      '/api/demo-workflow-tests',
+      '/api/auth-workflow-tests',
+      '/api/logo-navigation-tests',
+      '/api/ai-resilience-tests',
+      '/api/live-inspection-tests',
+      '/api/report-consistency-tests',
+      '/api/pricing-tests',
+      '/api/pricing-auth-tests'
+    ].includes(pathname);
+
+    if (isTestRoute) {
+      const remoteIp = req.socket.remoteAddress;
+      const isDirectLoopback = (
+        remoteIp === '127.0.0.1' ||
+        remoteIp === '::1' ||
+        remoteIp === '::ffff:127.0.0.1'
+      );
+      const hasProxy = Boolean(
+        req.headers['x-forwarded-for'] ||
+        req.headers['x-real-ip'] ||
+        req.headers['cf-connecting-ip'] ||
+        req.headers['true-client-ip'] ||
+        req.headers['forwarded']
+      );
+      const isProduction = process.env.NODE_ENV === 'production' && process.env.FLIQ_ALLOW_TEST_ROUTES !== 'true';
+      if (!isDirectLoopback || hasProxy || isProduction) {
+        return send(res, 404, { error: 'Not found.' });
+      }
+    }
     if(pathname==='/api/regression-tests'){
       if(req.method==='POST'){
         try {
@@ -1149,6 +1244,48 @@ const server=http.createServer(async(req,res)=>{
         return send(res, 200, JSON.parse(raw));
       } catch {
         return send(res, 404, { error: 'No report consistency test results recorded yet. Send POST to run.' });
+      }
+    }
+    if(pathname==='/api/pricing-tests'){
+      if(req.method==='POST'){
+        try {
+          const report = await runPricingVerificationTests();
+          return send(res, 200, report);
+        } catch(err) {
+          return send(res, 500, { error: err.message });
+        }
+      }
+      try {
+        const raw = await fs.readFile(path.join(dataDir, 'pricing-test-results.json'), 'utf8');
+        return send(res, 200, JSON.parse(raw));
+      } catch {
+        try {
+          const report = await runPricingVerificationTests();
+          return send(res, 200, report);
+        } catch(e) {
+          return send(res, 500, { error: e.message });
+        }
+      }
+    }
+    if(pathname==='/api/pricing-auth-tests'){
+      if(req.method==='POST'){
+        try {
+          const report = await runPricingAuthTests();
+          return send(res, 200, report);
+        } catch(err) {
+          return send(res, 500, { error: err.message });
+        }
+      }
+      try {
+        const raw = await fs.readFile(path.join(dataDir, 'pricing-auth-test-results.json'), 'utf8');
+        return send(res, 200, JSON.parse(raw));
+      } catch {
+        try {
+          const report = await runPricingAuthTests();
+          return send(res, 200, report);
+        } catch(e) {
+          return send(res, 500, { error: e.message });
+        }
       }
     }
     if(pathname==='/api/profile'&&(req.method==='GET'||req.method==='POST')){
@@ -1324,30 +1461,6 @@ const server=http.createServer(async(req,res)=>{
         return send(res,200,{...safe,canManageSharing:isOwner});
       }catch(e){return send(res,e.status||401,{error:e.message});}
     }
-    if (pathname === '/api/report-consistency-tests') {
-      try {
-        const report = await runReportConsistencyTests();
-        return send(res, 200, report);
-      } catch (e) {
-        return send(res, 500, { error: e.message });
-      }
-    }
-    if (pathname === '/api/pricing-tests') {
-      try {
-        const report = await runPricingVerificationTests();
-        return send(res, 200, report);
-      } catch (e) {
-        return send(res, 500, { error: e.message });
-      }
-    }
-    if (pathname === '/api/pricing-auth-tests') {
-      try {
-        const report = await runPricingAuthTests();
-        return send(res, 200, report);
-      } catch (e) {
-        return send(res, 500, { error: e.message });
-      }
-    }
     const sm=pathname.match(/^\/api\/screenshots\/([\w-]+\.png)$/); 
     if(sm){
       try{
@@ -1377,55 +1490,110 @@ const server=http.createServer(async(req,res)=>{
   if(pathname!=='/'&&!file.startsWith(path.resolve(root,'public')+path.sep)){const publicFile=path.resolve(root,'public',decodeURIComponent(pathname.slice(1)));try{await fs.access(publicFile);file=publicFile;}catch{}}
   try{const b=await fs.readFile(file);res.writeHead(200,{'content-type':mime[path.extname(file)]||'application/octet-stream'});res.end(b);}catch{const b=await fs.readFile(path.join(root,'index.html'));res.writeHead(200,{'content-type':'text/html; charset=utf-8'});res.end(b);}
 });
-server.listen(Number(process.env.PORT)||3000,'127.0.0.1',()=>{
-  console.log(`FLIQ ready on http://127.0.0.1:${Number(process.env.PORT)||3000}`);
-  if(playwrightAvailable){
-    runA11yRegressionSuite().then(report=>{
-      console.log(`[FLIQ] Accessibility Regression Suite executed: ${report.passedTests}/${report.totalTests} passed in ${report.durationMs}ms`);
-    }).catch(err=>{
-      console.error('[FLIQ] Accessibility Regression Suite error:', err.message);
-    });
-    runDemoWorkflowTests().then(report=>{
-      console.log(`[FLIQ] Demo Workflow Test Suite executed: ${report.passedTests}/${report.totalTests} passed`);
-    }).catch(err=>{
-      console.error('[FLIQ] Demo Workflow Test Suite error:', err.message);
-    });
-    runAuthWorkflowTests().then(report=>{
-      console.log(`[FLIQ] Auth-First Workflow Test Suite executed: ${report.passedTests}/${report.totalTests} passed in ${report.durationMs}ms`);
-    }).catch(err=>{
-      console.error('[FLIQ] Auth-First Workflow Test Suite error:', err.message);
-    });
-    runLogoNavigationTests().then(report=>{
-      console.log(`[FLIQ] Logo Navigation Test Suite executed: ${report.passedTests}/${report.totalTests} passed in ${report.durationMs}ms`);
-    }).catch(err=>{
-      console.error('[FLIQ] Logo Navigation Test Suite error:', err.message);
-    });
-    runAIResilienceTests().then(report=>{
-      console.log(`[FLIQ] AI Resilience Test Suite executed: ${report.passedTests}/${report.totalTests} passed in ${report.durationMs}ms`);
-    }).catch(err=>{
-      console.error('[FLIQ] AI Resilience Test Suite error:', err.message);
-    });
-    runLiveInspectionTests().then(report=>{
-      console.log(`[FLIQ] Live Inspection Test Suite executed: ${report.passedTests}/${report.totalTests} passed in ${report.durationMs}ms`);
-    }).catch(err=>{
-      console.error('[FLIQ] Live Inspection Test Suite error:', err.message);
-    });
-    runReportConsistencyTests().then(report=>{
-      console.log(`[FLIQ] Report Consistency Test Suite executed: ${report.passedTests}/${report.totalTests} passed in ${report.durationMs}ms`);
-    }).catch(err=>{
-      console.error('[FLIQ] Report Consistency Test Suite error:', err.message);
-    });
-    runPricingVerificationTests().then(report=>{
-      console.log(`[FLIQ] Pricing Verification Test Suite executed: ${report.passedTests}/${report.totalTests} passed in ${report.durationMs}ms`);
-    }).catch(err=>{
-      console.error('[FLIQ] Pricing Verification Test Suite error:', err.message);
-    });
-    runPricingAuthTests().then(report=>{
-      console.log(`[FLIQ] Pricing & Auth Integration Test Suite executed: ${report.passedTests}/${report.totalTests} passed in ${report.durationMs}ms`);
-    }).catch(err=>{
-      console.error('[FLIQ] Pricing & Auth Integration Test Suite error:', err.message);
-    });
+const PORT = Number(process.env.PORT) || 3000;
+const HOST = process.env.HOST || '0.0.0.0';
+
+export async function runAllSuitesSequentially() {
+  try {
+    const a11y = await runA11yRegressionSuite();
+    console.log(`[FLIQ] Accessibility Regression Suite executed: ${a11y.passedTests}/${a11y.totalTests} passed in ${a11y.durationMs}ms`);
+  } catch (err) {
+    console.error('[FLIQ] Accessibility Regression Suite error:', err.message);
   }
-});
+  try {
+    const demo = await runDemoWorkflowTests();
+    console.log(`[FLIQ] Demo Workflow Test Suite executed: ${demo.passedTests}/${demo.totalTests} passed`);
+  } catch (err) {
+    console.error('[FLIQ] Demo Workflow Test Suite error:', err.message);
+  }
+  try {
+    const auth = await runAuthWorkflowTests();
+    console.log(`[FLIQ] Auth-First Workflow Test Suite executed: ${auth.passedTests}/${auth.totalTests} passed in ${auth.durationMs}ms`);
+  } catch (err) {
+    console.error('[FLIQ] Auth-First Workflow Test Suite error:', err.message);
+  }
+  try {
+    const logo = await runLogoNavigationTests();
+    console.log(`[FLIQ] Logo Navigation Test Suite executed: ${logo.passedTests}/${logo.totalTests} passed in ${logo.durationMs}ms`);
+  } catch (err) {
+    console.error('[FLIQ] Logo Navigation Test Suite error:', err.message);
+  }
+  try {
+    const ai = await runAIResilienceTests();
+    console.log(`[FLIQ] AI Resilience Test Suite executed: ${ai.passedTests}/${ai.totalTests} passed in ${ai.durationMs}ms`);
+  } catch (err) {
+    console.error('[FLIQ] AI Resilience Test Suite error:', err.message);
+  }
+  try {
+    const live = await runLiveInspectionTests();
+    console.log(`[FLIQ] Live Inspection Test Suite executed: ${live.passedTests}/${live.totalTests} passed in ${live.durationMs}ms`);
+  } catch (err) {
+    console.error('[FLIQ] Live Inspection Test Suite error:', err.message);
+  }
+  try {
+    const rep = await runReportConsistencyTests();
+    console.log(`[FLIQ] Report Consistency Test Suite executed: ${rep.passedTests}/${rep.totalTests} passed in ${rep.durationMs}ms`);
+  } catch (err) {
+    console.error('[FLIQ] Report Consistency Test Suite error:', err.message);
+  }
+  try {
+    const pricing = await runPricingVerificationTests();
+    console.log(`[FLIQ] Pricing Verification Test Suite executed: ${pricing.passedTests}/${pricing.totalTests} passed in ${pricing.durationMs}ms`);
+  } catch (err) {
+    console.error('[FLIQ] Pricing Verification Test Suite error:', err.message);
+  }
+  try {
+    const pAuth = await runPricingAuthTests();
+    console.log(`[FLIQ] Pricing & Auth Integration Test Suite executed: ${pAuth.passedTests}/${pAuth.totalTests} passed in ${pAuth.durationMs}ms`);
+  } catch (err) {
+    console.error('[FLIQ] Pricing & Auth Integration Test Suite error:', err.message);
+  }
+}
+
+export function startServer(port = PORT, host = HOST) {
+  return new Promise((resolve, reject) => {
+    server.listen(port, host, (err) => {
+      if (err) return reject(err);
+      console.log(`FLIQ ready on http://${host === '0.0.0.0' ? '127.0.0.1' : host}:${port}`);
+      resolve(server);
+    });
+  });
+}
+
+export function closeServer() {
+  return new Promise((resolve) => {
+    server.close(() => resolve());
+  });
+}
+
+export { server };
+
+const isMain = process.argv[1] && (path.resolve(process.argv[1]) === fileURLToPath(import.meta.url));
+if (isMain) {
+  startServer().then(() => {
+    if (playwrightAvailable && process.env.NODE_ENV !== 'production' && process.env.FLIQ_RUN_SUITES_ON_START !== 'false') {
+      runAllSuitesSequentially().catch(err => console.error('[FLIQ] Test runner sequence error:', err));
+    }
+  }).catch(err => {
+    console.error('[FLIQ] Failed to start server:', err.message);
+  });
+
+  const handleShutdown = (signal) => {
+    console.log(`[FLIQ] Received ${signal}. Closing server gracefully...`);
+    closeServer().then(() => {
+      console.log('[FLIQ] HTTP server closed cleanly. Exiting.');
+      process.exit(0);
+    }).catch(() => {
+      process.exit(1);
+    });
+    setTimeout(() => {
+      console.error('[FLIQ] Forceful shutdown timeout exceeded.');
+      process.exit(1);
+    }, 10000).unref();
+  };
+
+  process.on('SIGTERM', () => handleShutdown('SIGTERM'));
+  process.on('SIGINT', () => handleShutdown('SIGINT'));
+}
 
 
