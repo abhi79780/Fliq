@@ -343,7 +343,12 @@ const hasMapping=friendly!=='Firebase could not complete the request. Check your
 function getApiBase() {
   if (typeof window === 'undefined') return '';
   const candidate = (window.__FLIQ_API_URL__ || window.__FLIQ_FIREBASE_CONFIG__?.apiUrl || '').trim();
-  return candidate ? candidate.replace(/\/+$/, '') : '';
+  if (candidate) return candidate.replace(/\/+$/, '');
+  const host = (window.location?.hostname || '').toLowerCase();
+  if (host.endsWith('.pages.dev') || host.endsWith('.vercel.app') || host.endsWith('.netlify.app')) {
+    return 'https://fliq-ezaz.onrender.com';
+  }
+  return '';
 }
 
 async function authHeaders(){
@@ -1358,23 +1363,31 @@ async function tests(){
     console.log('User UID:', user?.uid || 'none');
     console.log('User Email:', user?.email || 'none');
     
-    const r = await apiFetch('/api/tests');
+    let r = await apiFetch('/api/tests');
     console.log('/api/tests status:', r.status);
     
-    const text = await r.text();
+    let text = await r.text();
     let data;
     try {
       data = JSON.parse(text);
     } catch (parseErr) {
-      console.error('/api/tests returned non-JSON:', text.slice(0, 250));
-      testLoadError = true;
-      if (text.trim().startsWith('<') || text.includes('<!DOCTYPE') || text.includes('<html')) {
-        testLoadMessage = 'Could not contact the FLIQ API server. Received HTML instead of JSON. If hosting the frontend on Cloudflare Pages, Vercel, or Netlify, verify that FLIQ_BACKEND_URL is set in your build environment to your running backend server.';
-      } else {
-        testLoadMessage = 'Could not contact the FLIQ server. The API returned an invalid response.';
+      // Retry once after 1200ms to tolerate transient edge proxy 502/503 hiccups
+      await new Promise(res => setTimeout(res, 1200));
+      try {
+        r = await apiFetch('/api/tests');
+        text = await r.text();
+        data = JSON.parse(text);
+      } catch (retryErr) {
+        console.error('/api/tests returned non-JSON:', text.slice(0, 250));
+        testLoadError = true;
+        if (text.trim().startsWith('<') || text.includes('<!DOCTYPE') || text.includes('<html')) {
+          testLoadMessage = 'Could not contact the FLIQ API server. Received HTML instead of JSON. If hosting the frontend on Cloudflare Pages, Vercel, or Netlify, verify that FLIQ_BACKEND_URL is set in your build environment to your running backend server.';
+        } else {
+          testLoadMessage = 'Could not contact the FLIQ server. The API returned an invalid response.';
+        }
+        console.groupEnd();
+        return null;
       }
-      console.groupEnd();
-      return null;
     }
 
     if (r.status === 401) {
@@ -1503,9 +1516,13 @@ async function refreshDashboardData(force = false) {
     const data = await tests();
     isFetchingTests = false;
     if (data === null) {
-      window.__fliqTestsError = true;
-      window.__fliqTestsErrorMessage = testLoadMessage;
-      updateDashboardDom(null);
+      if (!window.__fliqCachedTests || !window.__fliqCachedTests.length) {
+        window.__fliqTestsError = true;
+        window.__fliqTestsErrorMessage = testLoadMessage;
+        updateDashboardDom(null);
+      } else {
+        console.warn('[FLIQ] Retaining cached dashboard metrics during temporary server reconnect');
+      }
     } else {
       window.__fliqCachedTests = data;
       window.__fliqTestsError = false;
@@ -1514,9 +1531,11 @@ async function refreshDashboardData(force = false) {
     }
   } catch (err) {
     isFetchingTests = false;
-    window.__fliqTestsError = true;
-    window.__fliqTestsErrorMessage = 'Could not contact the FLIQ server. Please check your connection.';
-    updateDashboardDom(null);
+    if (!window.__fliqCachedTests || !window.__fliqCachedTests.length) {
+      window.__fliqTestsError = true;
+      window.__fliqTestsErrorMessage = 'Could not contact the FLIQ server. Please check your connection.';
+      updateDashboardDom(null);
+    }
   }
 }
 
@@ -1678,15 +1697,17 @@ const CANONICAL_LIVE_STAGES = [
   { id: 8, name: 'Generating report', p: 98, desc: 'Compiling evidence, multi-viewport reflow captures, and scoring' }
 ];
 
-async function progressPage(id) {
-  const rr = await apiFetch(`/api/tests/${id}`);
-  const text = await rr.text();
-  let t;
-  try { t = JSON.parse(text); } catch { t = { error: 'Could not contact the FLIQ API server.' }; }
+async function progressPage(id, preloaded = null) {
+  let t = preloaded;
+  if (!t) {
+    const rr = await apiFetch(`/api/tests/${id}`);
+    const text = await rr.text();
+    try { t = JSON.parse(text); } catch { t = { error: 'Could not contact the FLIQ API server.' }; }
+  }
   if (t.error) return appShell(`<div class="empty"><h2>${esc(t.error)}</h2><a href="/dashboard" data-route>Return to dashboard</a></div>`);
   if (t.status === 'completed') {
     clearActiveScanState();
-    return resultPage(id);
+    return resultPage(id, t);
   }
 
   if (t.status === 'failed') {
@@ -2398,13 +2419,15 @@ function coverageTabContent(t) {
   `;
 }
 
-async function resultPage(id){
-  const rr=await apiFetch(`/api/tests/${id}`);
-  const text=await rr.text();
-  let t;
-  try{ t=JSON.parse(text); }catch{ t={error:'Could not contact the FLIQ API server.'}; }
-  if(t.error)return appShell(`<div class="empty"><h2>${esc(t.error)}</h2><a href="/dashboard" data-route>Return to dashboard</a></div>`);
-  if(t.status!=='completed')return progressPage(id);
+async function resultPage(id, preloaded = null){
+  let t = preloaded;
+  if (!t) {
+    const rr = await apiFetch(`/api/tests/${id}`);
+    const text = await rr.text();
+    try { t = JSON.parse(text); } catch { t = { error: 'Could not contact the FLIQ API server.' }; }
+  }
+  if (t.error) return appShell(`<div class="empty"><h2>${esc(t.error)}</h2><a href="/dashboard" data-route>Return to dashboard</a></div>`);
+  if (t.status !== 'completed') return progressPage(id, t);
   clearActiveScanState();
 
   const allIssues = t.issues || [];

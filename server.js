@@ -128,7 +128,27 @@ if (!expectedProjectId) {
     console.error('[Firebase Admin] Scanning and report access will be unavailable until credentials are configured.');
   }
 }
-const cloud = () => (adminApp && firestoreAvailable && getFirestore) ? getFirestore(adminApp) : null;
+const cloud = () => {
+  if (adminApp && firestoreAvailable && getFirestore) {
+    const db = getFirestore(adminApp);
+    try { db.settings({ ignoreUndefinedProperties: true }); } catch {}
+    return db;
+  }
+  return null;
+};
+
+export function sanitizeReportForPersistence(obj) {
+  if (obj === undefined) return null;
+  if (obj === null || typeof obj !== 'object') return obj;
+  if (Array.isArray(obj)) return obj.map(sanitizeReportForPersistence);
+  const clean = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v !== undefined) {
+      clean[k] = sanitizeReportForPersistence(v);
+    }
+  }
+  return clean;
+}
 
 let cachedFirestoreConnected = false;
 let cachedFirestoreError = null;
@@ -420,7 +440,8 @@ async function executeTest(job) {
       broadcastScanUpdate(job.id, updatedRecord);
       if (adminApp && cloud() && job.owner !== 'local' && !String(job.owner).startsWith('anon:')) {
         try {
-          await cloud().collection('tests').doc(job.id).set(fields, { merge: true });
+          const sanitized = sanitizeReportForPersistence(fields);
+          await cloud().collection('tests').doc(job.id).set(sanitized, { merge: true });
         } catch (fsErr) {
           console.error('[FLIQ] Firestore test update error:', fsErr.message);
         }
@@ -457,7 +478,18 @@ async function executeTest(job) {
         '--disable-setuid-sandbox',
         '--disable-gpu',
         '--no-zygote',
-        '--no-first-run'
+        '--no-first-run',
+        '--renderer-process-limit=1',
+        '--js-flags=--max-old-space-size=128',
+        '--disable-extensions',
+        '--disable-component-extensions-with-background-pages',
+        '--mute-audio',
+        '--disable-default-apps',
+        '--disable-background-networking',
+        '--disable-background-timer-throttling',
+        '--disable-backgrounding-occluded-windows',
+        '--disable-features=Translate,BackForwardCache,AcceptCHFrame,MediaRouter,OptimizationHints',
+        '--memory-pressure-off'
       ]
     });
     const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
@@ -951,52 +983,71 @@ async function executeTest(job) {
     await update({ progress: 95, stage: 'Generating report', currentUrl: finalUrl });
     let discoveredLinks = [];
     try {
-      discoveredLinks = await page.evaluate(extractDiscoveredLinks, location.origin);
-    } catch {}
+      const targetOrigin = new URL(finalUrl).origin;
+      discoveredLinks = await page.evaluate(extractDiscoveredLinks, targetOrigin);
+    } catch (linkErr) {
+      console.warn('[FLIQ] Link discovery non-fatal warning:', linkErr.message);
+    }
 
     let robotsInfo = { exists: false, status: 0, disallowedPaths: [] };
     try {
       robotsInfo = await checkRobotsTxt(new URL(finalUrl).origin);
     } catch {}
 
-    // Desktop viewport (1440x960) capture: reset scroll to hero top (0, 0)
-    await page.setViewportSize({ width: 1440, height: 960 });
-    await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
-    await page.waitForTimeout(250);
+    // Resilient Viewport Capture (Desktop, Tablet, Mobile)
     const desktop = path.join(dataDir, `${job.id}-desktop.png`);
-    await page.screenshot({ path: desktop, fullPage: false }).catch(() => {});
-    await fs.copyFile(desktop, liveScreenshotPath).catch(() => {});
-
-    // Tablet viewport (768x1024) capture: reset scroll to hero top (0, 0)
-    await page.setViewportSize({ width: 768, height: 1024 });
-    await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
-    await page.waitForTimeout(250);
     const tablet = path.join(dataDir, `${job.id}-tablet.png`);
-    await page.screenshot({ path: tablet, fullPage: false }).catch(() => {});
+    const mobile = path.join(dataDir, `${job.id}-mobile.png`);
+
     try {
-      const tabletOverflow = await page.evaluate(checkResponsiveLayout, finalUrl);
-      for (const f of tabletOverflow.findings || []) {
+      await page.setViewportSize({ width: 1440, height: 960 });
+      await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
+      await page.waitForTimeout(150);
+      await page.screenshot({ path: desktop, fullPage: false, timeout: 6000 });
+      await fs.copyFile(desktop, liveScreenshotPath).catch(() => {});
+    } catch (dErr) {
+      console.warn('[FLIQ] Desktop screenshot non-fatal warning:', dErr.message);
+    }
+
+    try {
+      await page.setViewportSize({ width: 768, height: 1024 });
+      await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
+      await page.waitForTimeout(100);
+      await page.screenshot({ path: tablet, fullPage: false, timeout: 5000 });
+      const tabletOverflow = await page.evaluate(checkResponsiveLayout, finalUrl).catch(() => null);
+      for (const f of tabletOverflow?.findings || []) {
         f.title = `[Tablet] ${f.title}`;
         issues.push({ id: randomUUID(), ...f });
       }
-    } catch {}
+    } catch (tErr) {
+      console.warn('[FLIQ] Tablet capture non-fatal warning:', tErr.message);
+      try { await fs.copyFile(desktop, tablet); } catch {}
+    }
 
-    // Mobile viewport (390x844) capture: reset scroll to hero top (0, 0)
-    await page.setViewportSize({ width: 390, height: 844 });
-    await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
-    await page.waitForTimeout(250);
-    const mobile = path.join(dataDir, `${job.id}-mobile.png`);
-    await page.screenshot({ path: mobile, fullPage: false }).catch(() => {});
     try {
-      const mobileOverflow = await page.evaluate(checkResponsiveLayout, finalUrl);
-      for (const f of mobileOverflow.findings || []) {
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
+      await page.waitForTimeout(100);
+      await page.screenshot({ path: mobile, fullPage: false, timeout: 5000 });
+      const mobileOverflow = await page.evaluate(checkResponsiveLayout, finalUrl).catch(() => null);
+      for (const f of mobileOverflow?.findings || []) {
         f.title = `[Mobile] ${f.title}`;
         issues.push({ id: randomUUID(), ...f });
       }
-    } catch {}
+    } catch (mErr) {
+      console.warn('[FLIQ] Mobile capture non-fatal warning:', mErr.message);
+      try { await fs.copyFile(desktop, mobile); } catch {}
+    }
 
-    await browser.close();
-    browser = null;
+    // Immediately close Chromium browser to release ~300MB RAM before report aggregation & scoring
+    try {
+      if (browser) {
+        await browser.close();
+        browser = null;
+      }
+    } catch (bCloseErr) {
+      console.warn('[FLIQ] Browser close warning:', bCloseErr.message);
+    }
 
     // Quality Analysis & Explanations (Deterministic quality engine)
     await update({ progress: 96, stage: 'Generating report' });
@@ -1460,6 +1511,10 @@ const server=http.createServer(async(req,res)=>{
       const set = sseSubscribers.get(testId);
       set.add(res);
 
+      const heartbeat = setInterval(() => {
+        try { res.write(': keep-alive\n\n'); } catch { clearInterval(heartbeat); }
+      }, 15000);
+
       try {
         const localDb = await readDB();
         const current = localDb.find(x => x.id === testId);
@@ -1469,6 +1524,7 @@ const server=http.createServer(async(req,res)=>{
       } catch {}
 
       req.on('close', () => {
+        clearInterval(heartbeat);
         set.delete(res);
         if (set.size === 0) sseSubscribers.delete(testId);
       });
@@ -1692,6 +1748,13 @@ if (isMain) {
 
   process.on('SIGTERM', () => handleShutdown('SIGTERM'));
   process.on('SIGINT', () => handleShutdown('SIGINT'));
+
+  process.on('unhandledRejection', (reason) => {
+    console.error('[FLIQ] Unhandled Promise Rejection (safely caught):', reason instanceof Error ? reason.stack : reason);
+  });
+  process.on('uncaughtException', (err) => {
+    console.error('[FLIQ] Uncaught Exception (safely caught):', err?.stack || err?.message || String(err));
+  });
 }
 
 

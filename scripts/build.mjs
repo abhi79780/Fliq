@@ -42,7 +42,7 @@ const authDomain = process.env.FIREBASE_AUTH_DOMAIN?.trim() || (projectId ? `${p
 const messagingSenderId = process.env.FIREBASE_MESSAGING_SENDER_ID?.trim() || '';
 const appId = process.env.FIREBASE_APP_ID?.trim() || '';
 
-const apiUrl = process.env.FLIQ_BACKEND_URL?.trim() || process.env.FLIQ_API_URL?.trim() || '';
+const apiUrl = process.env.FLIQ_BACKEND_URL?.trim() || process.env.FLIQ_API_URL?.trim() || (process.env.CF_PAGES ? 'https://fliq-ezaz.onrender.com' : '');
 
 const config = {
   apiKey,
