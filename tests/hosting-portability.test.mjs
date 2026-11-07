@@ -181,4 +181,71 @@ describe('FLIQ Multi-Platform Hosting Portability Test Suite', () => {
       assert.match(content, /new\s+EventSource\s*\(\s*sseUrl\s*\)/, 'subscribeLiveScan must use resolved backend sseUrl');
     });
   });
+
+  describe('6. Production Docker & Firestore Dependency Integrity', () => {
+    test('package.json and package-lock.json are synchronized with @google-cloud/firestore', () => {
+      const pkgPath = path.join(root, 'package.json');
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+      assert.ok(pkg.dependencies['@google-cloud/firestore'], '@google-cloud/firestore must be declared in dependencies');
+      assert.ok(pkg.dependencies['firebase-admin'], 'firebase-admin must be declared in dependencies');
+
+      const lockPath = path.join(root, 'package-lock.json');
+      const lock = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+      assert.ok(lock.packages[''].dependencies['@google-cloud/firestore'], 'package-lock.json root must declare @google-cloud/firestore');
+      assert.ok(lock.packages['node_modules/@google-cloud/firestore'], 'package-lock.json must contain node_modules/@google-cloud/firestore');
+      assert.equal(lock.packages['node_modules/@google-cloud/firestore'].optional, undefined, '@google-cloud/firestore must not be optional');
+    });
+
+    test('Firebase Admin can resolve and import firebase-admin/firestore', async () => {
+      const { getFirestore } = await import('firebase-admin/firestore');
+      assert.equal(typeof getFirestore, 'function', 'getFirestore must be an exported function from firebase-admin/firestore');
+    });
+
+    test('Dockerfile specifies node:22-bookworm-slim, npm ci --omit=dev, and installs all required Chromium libraries', () => {
+      const dockerfilePath = path.join(root, 'Dockerfile');
+      const dockerfile = fs.readFileSync(dockerfilePath, 'utf8');
+      assert.match(dockerfile, /FROM\s+node:22-bookworm-slim/, 'Dockerfile must use node:22-bookworm-slim for Node 22 compatibility');
+      assert.match(dockerfile, /npm\s+ci\s+--omit=dev/, 'Dockerfile must install production dependencies using npm ci --omit=dev');
+      assert.match(dockerfile, /npx\s+playwright\s+install\s+chromium/, 'Dockerfile must download Chromium browser');
+
+      const requiredAptLibs = [
+        'ca-certificates', 'fonts-liberation', 'libasound2', 'libatk-bridge2.0-0',
+        'libatk1.0-0', 'libcairo2', 'libcups2', 'libdbus-1-3', 'libdrm2',
+        'libgbm1', 'libglib2.0-0', 'libgtk-3-0', 'libnspr4', 'libnss3',
+        'libpango-1.0-0', 'libx11-6', 'libx11-xcb1', 'libxcb1', 'libxcomposite1',
+        'libxcursor1', 'libxdamage1', 'libxext6', 'libxfixes3', 'libxi6',
+        'libxrandr2', 'libxrender1', 'libxss1', 'libxtst6'
+      ];
+      for (const lib of requiredAptLibs) {
+        assert.ok(dockerfile.includes(lib), `Dockerfile must install ${lib} for headless Chromium`);
+      }
+
+      assert.match(dockerfile, /CMD\s+\["node",\s*"server\.js"\]/, 'Dockerfile must have CMD ["node", "server.js"] to launch server');
+    });
+
+    test('Docker container default networking binds PORT=3000 and HOST=0.0.0.0', () => {
+      const dockerfilePath = path.join(root, 'Dockerfile');
+      const dockerfile = fs.readFileSync(dockerfilePath, 'utf8');
+      assert.match(dockerfile, /ENV\s+PORT=3000/, 'Dockerfile must declare ENV PORT=3000');
+      assert.match(dockerfile, /ENV\s+HOST=0\.0\.0\.0/, 'Dockerfile must declare ENV HOST=0.0.0.0');
+      assert.match(dockerfile, /EXPOSE\s+3000/, 'Dockerfile must expose port 3000');
+    });
+
+    test('server.js exports PORT and HOST respecting container environment defaults', async () => {
+      const { PORT, HOST } = await import('../server.js');
+      assert.equal(typeof PORT, 'number', 'PORT must be exported as a number');
+      assert.ok(PORT > 0 && PORT <= 65535, 'PORT must be a valid port number');
+      assert.ok(HOST === '0.0.0.0' || HOST === '127.0.0.1' || HOST === 'localhost', 'HOST must be a valid host string');
+    });
+  });
+
+  describe('7. Health Endpoint Telemetry & Firestore Connectivity Semantics', () => {
+    test('checkFirestoreConnectivity safely handles unconfigured credentials without throwing', async () => {
+      const { checkFirestoreConnectivity } = await import('../server.js');
+      const result = await checkFirestoreConnectivity();
+      assert.equal(typeof result, 'object', 'checkFirestoreConnectivity must return an object');
+      assert.equal('connected' in result, true, 'result must have connected boolean field');
+      assert.equal('error' in result, true, 'result must have error field');
+    });
+  });
 });

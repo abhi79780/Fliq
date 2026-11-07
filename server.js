@@ -8,7 +8,16 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { initializeApp, cert, applicationDefault, getApps } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
-import { getFirestore, FieldValue } from 'firebase-admin/firestore';
+
+let getFirestore = null;
+let firestoreAvailable = false;
+try {
+  const fsMod = await import('firebase-admin/firestore');
+  getFirestore = fsMod.getFirestore;
+  firestoreAvailable = true;
+} catch (fsImportErr) {
+  console.warn('[Firebase Admin] Notice: firebase-admin/firestore is unavailable:', fsImportErr.message);
+}
 import { evaluateAccessibility, auditNativeKeyboardNavigation, A11Y_CHECKS } from './lib/a11y-scanner.js';
 import { evaluateSEO, SEO_CHECKS } from './lib/seo-scanner.js';
 import { evaluateSecurityHeaders, evaluateDOMSecurity, SECURITY_CHECKS } from './lib/security-scanner.js';
@@ -119,7 +128,37 @@ if (!expectedProjectId) {
     console.error('[Firebase Admin] Scanning and report access will be unavailable until credentials are configured.');
   }
 }
-const cloud = () => adminApp ? getFirestore(adminApp) : null;
+const cloud = () => (adminApp && firestoreAvailable && getFirestore) ? getFirestore(adminApp) : null;
+
+let cachedFirestoreConnected = false;
+let cachedFirestoreError = null;
+let lastFirestoreCheck = 0;
+
+export async function checkFirestoreConnectivity(force = false) {
+  const db = cloud();
+  if (!db) {
+    return { connected: false, error: 'Firestore unconfigured or credentials missing' };
+  }
+  const now = Date.now();
+  if (!force && (now - lastFirestoreCheck < 30000)) {
+    return { connected: cachedFirestoreConnected, error: cachedFirestoreError };
+  }
+  lastFirestoreCheck = now;
+  try {
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('Firestore connectivity check timed out (3s)')), 3000)
+    );
+    const probePromise = db.collection('_health_probe').limit(1).get();
+    await Promise.race([probePromise, timeoutPromise]);
+    cachedFirestoreConnected = true;
+    cachedFirestoreError = null;
+    return { connected: true, error: null };
+  } catch (err) {
+    cachedFirestoreConnected = false;
+    cachedFirestoreError = err.message || String(err);
+    return { connected: false, error: cachedFirestoreError };
+  }
+}
 const getWebApiKey = () => process.env.FIREBASE_WEB_API_KEY?.trim() || process.env.FIREBASE_API_KEY?.trim() || '';
 const getFirebaseWebConfig = () => {
   const projectId = process.env.FIREBASE_PROJECT_ID?.trim() || '';
@@ -230,7 +269,7 @@ async function reconcileStaleJobs(maxAgeMs = 180000) {
         job.error = job.error || (maxAgeMs === 0 ? 'Test was interrupted by a server restart.' : 'Test timed out before completion.');
         job.completedAt = job.completedAt || new Date().toISOString();
         changed = true;
-        if (adminApp && job.owner !== 'local' && !String(job.owner).startsWith('anon:')) {
+        if (adminApp && cloud() && job.owner !== 'local' && !String(job.owner).startsWith('anon:')) {
           try {
             await cloud().collection('tests').doc(job.id).set({
               status: 'failed',
@@ -379,7 +418,7 @@ async function executeTest(job) {
         updatedRecord = { ...job, ...fields };
       }
       broadcastScanUpdate(job.id, updatedRecord);
-      if (adminApp && job.owner !== 'local' && !String(job.owner).startsWith('anon:')) {
+      if (adminApp && cloud() && job.owner !== 'local' && !String(job.owner).startsWith('anon:')) {
         try {
           await cloud().collection('tests').doc(job.id).set(fields, { merge: true });
         } catch (fsErr) {
@@ -1126,7 +1165,35 @@ const server=http.createServer(async(req,res)=>{
   }
   if(pathname.startsWith('/api/')){
     if(pathname==='/api/firebase-config'&&req.method==='GET'){const missing=getMissingFirebaseWebFields();return send(res,200,{configured:missing.length===0,missing,config:missing.length===0?getFirebaseWebConfig():null});}
-    if(pathname==='/api/health'){const firebaseWebMissing=getMissingFirebaseWebFields(),firebaseAdminConfigured=Boolean(adminApp);const credentialType=adminApp?(process.env.FIREBASE_SERVICE_ACCOUNT_JSON?'service-account-env':process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim()?'service-account-file':'application-default-credentials'):'none';return send(res,200,{ok:true,playwrightConfigured:playwrightAvailable,firebaseConfigured:Boolean(firebaseAdminConfigured&&firebaseWebMissing.length===0),firebaseWebConfigured:firebaseWebMissing.length===0,firebaseWebMissing,firebaseAdminConfigured,credentialType,firebaseMissing:[...firebaseWebMissing,...(firebaseAdminConfigured?[]:[expectedProjectId?`Valid ${expectedProjectId} server credential (Firebase Admin) — run: gcloud auth application-default login --project=${expectedProjectId}`:'Valid Firebase Admin server credential required — set FIREBASE_PROJECT_ID and run: gcloud auth application-default login'])],authMode:firebaseAdminConfigured?'firebase':'local-preview'});}
+    if(pathname==='/api/health'){
+      const firebaseWebMissing = getMissingFirebaseWebFields();
+      const firebaseAdminConfigured = Boolean(adminApp);
+      const credentialType = adminApp ? (process.env.FIREBASE_SERVICE_ACCOUNT_JSON ? 'service-account-env' : process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim() ? 'service-account-file' : 'application-default-credentials') : 'none';
+      const firestoreModuleAvailable = Boolean(getFirestore);
+      const firestoreConfigured = Boolean(adminApp && firestoreModuleAvailable);
+      let firestoreConnected = false;
+      let firestoreConnectionError = null;
+      if (firestoreConfigured) {
+        const conn = await checkFirestoreConnectivity();
+        firestoreConnected = conn.connected;
+        firestoreConnectionError = conn.error;
+      }
+      return send(res, 200, {
+        ok: true,
+        playwrightConfigured: playwrightAvailable,
+        firestoreModuleAvailable,
+        firestoreConfigured,
+        firestoreConnected,
+        firestoreConnectionError,
+        firebaseConfigured: Boolean(firebaseAdminConfigured && firebaseWebMissing.length === 0),
+        firebaseWebConfigured: firebaseWebMissing.length === 0,
+        firebaseWebMissing,
+        firebaseAdminConfigured,
+        credentialType,
+        firebaseMissing: [...firebaseWebMissing, ...(firebaseAdminConfigured ? [] : [expectedProjectId ? `Valid ${expectedProjectId} server credential (Firebase Admin) — run: gcloud auth application-default login --project=${expectedProjectId}` : 'Valid Firebase Admin server credential required — set FIREBASE_PROJECT_ID and run: gcloud auth application-default login'])],
+        authMode: firebaseAdminConfigured ? 'firebase' : 'local-preview'
+      });
+    }
 
     // Security Gate: Test routes are strictly restricted to direct loopback requests in non-production environments
     const isTestRoute = [
@@ -1316,7 +1383,7 @@ const server=http.createServer(async(req,res)=>{
     }
     if(pathname==='/api/profile'&&(req.method==='GET'||req.method==='POST')){
       try{const user=await verifiedUser(req);let body='';if(req.method==='POST')for await(const c of req)body+=c;const values=body?JSON.parse(body):{};
-        if(adminApp&&user.uid!=='local'){const ref=cloud().collection('users').doc(user.uid);if(req.method==='POST'){const allowed=['displayName','websiteType','onboardingComplete','preferences'];const safe=Object.fromEntries(allowed.filter(k=>Object.hasOwn(values,k)).map(k=>[k,values[k]]));if(typeof safe.displayName==='string')safe.displayName=safe.displayName.slice(0,100);if(typeof safe.websiteType==='string')safe.websiteType=safe.websiteType.slice(0,80);await ref.set({...safe,uid:user.uid,updatedAt:FieldValue.serverTimestamp()},{merge:true});}const snap=await ref.get();return send(res,200,snap.exists?snap.data():{uid:user.uid});}
+        if(adminApp && cloud() && user.uid!=='local'){const ref=cloud().collection('users').doc(user.uid);if(req.method==='POST'){const allowed=['displayName','websiteType','onboardingComplete','preferences'];const safe=Object.fromEntries(allowed.filter(k=>Object.hasOwn(values,k)).map(k=>[k,values[k]]));if(typeof safe.displayName==='string')safe.displayName=safe.displayName.slice(0,100);if(typeof safe.websiteType==='string')safe.websiteType=safe.websiteType.slice(0,80);await ref.set({...safe,uid:user.uid,updatedAt:FieldValue.serverTimestamp()},{merge:true});}const snap=await ref.get();return send(res,200,snap.exists?snap.data():{uid:user.uid});}
         return send(res,200,{uid:user.uid,...values});
       }catch(e){return send(res,e.status||400,{error:e.message});}
     }
@@ -1324,7 +1391,7 @@ const server=http.createServer(async(req,res)=>{
       try{
         const user=await verifiedUser(req);
         const docs=new Map();
-        if(adminApp&&user.uid!=='local'){
+        if(adminApp && cloud() && user.uid!=='local'){
           try {
             const col=cloud().collection('tests');
             const [owned,shared]=await Promise.all([
@@ -1367,7 +1434,7 @@ const server=http.createServer(async(req,res)=>{
         const job={id:randomUUID(),url:valid.url,hostname:valid.hostname,status:'queued',progress:0,stage:'Queued',createdAt:new Date().toISOString(),owner:ownerId,isDemo:false}; 
         jobs.unshift(job); 
         await saveDB(jobs); 
-        if(adminApp&&user.uid!=='local'){
+        if(adminApp && cloud() && user.uid!=='local'){
           try { await cloud().collection('tests').doc(job.id).set(job); }
           catch(fsErr) { console.error('[FLIQ] Initial Firestore test save warning:', fsErr.message); }
         }
@@ -1441,7 +1508,7 @@ const server=http.createServer(async(req,res)=>{
         let testDoc=null;
         const localDb=await readDB();
         const localIdx=localDb.findIndex(x=>x.id===testId);
-        if(adminApp&&user.uid!=='local'){
+        if(adminApp && cloud() && user.uid!=='local'){
           const snap=await cloud().collection('tests').doc(testId).get();
           if(snap.exists)testDoc=snap.data();
         }
@@ -1453,7 +1520,7 @@ const server=http.createServer(async(req,res)=>{
         testDoc.issues=aiResult.issues;
         testDoc.isAiGenerated=Boolean(aiResult.isAiGenerated);
         testDoc.aiGeneratedAt=new Date().toISOString();
-        if(adminApp&&user.uid!=='local'){
+        if(adminApp && cloud() && user.uid!=='local'){
           try{await cloud().collection('tests').doc(testId).set({aiSummary:testDoc.aiSummary,issues:testDoc.issues,isAiGenerated:testDoc.isAiGenerated,aiGeneratedAt:testDoc.aiGeneratedAt},{merge:true});}catch(fsErr){console.error('[FLIQ] Firestore update warning in regenerate-ai:',fsErr.message);}
         }
         if(localIdx>=0){
@@ -1471,9 +1538,13 @@ const server=http.createServer(async(req,res)=>{
       try{
         const user=await verifiedUser(req);
         let j;
-        if(adminApp&&user.uid!=='local'){
-          const d=await cloud().collection('tests').doc(m[1]).get();
-          j=d.exists?d.data():null;
+        if(adminApp && cloud() && user.uid!=='local'){
+          try {
+            const d=await cloud().collection('tests').doc(m[1]).get();
+            j=d.exists?d.data():null;
+          } catch(fsErr) {
+            console.warn('[FLIQ] Firestore test doc fetch warning:', fsErr.message);
+          }
         }
         if(!j) j=(await readDB()).find(x=>x.id===m[1]);
         if(!j) return send(res,404,{error:'Test not found.'});
@@ -1593,7 +1664,7 @@ export function closeServer() {
   });
 }
 
-export { server };
+export { server, PORT, HOST };
 
 const isMain = process.argv[1] && (path.resolve(process.argv[1]) === fileURLToPath(import.meta.url));
 if (isMain) {

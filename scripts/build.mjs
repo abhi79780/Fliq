@@ -192,11 +192,10 @@ if (fs.existsSync(functionsDir)) {
   }
 }
 
-// 7. Ensure clean _redirects file for static hosting without conflicting 200 rewrite loops
+// 7. Ensure clean _redirects file for static hosting without conflicting rewrite loops
 const cleanRedirectsContent = `# FLIQ Static Routing Configuration
-# Client-side SPA routing is handled natively by Cloudflare Pages (via 200.html / index.html),
-# Netlify (via netlify.toml), and Vercel (via vercel.json).
-# Conflicting 200 rewrite rules are omitted to prevent Cloudflare redirect loops [code: 100324].
+# Client-side SPA routing is handled natively by Cloudflare Pages, Netlify, and Vercel.
+# Conflicting rewrite rules are omitted to prevent Cloudflare redirect loops [code: 100324].
 `;
 fs.writeFileSync(path.join(root, '_redirects'), cleanRedirectsContent, 'utf8');
 fs.writeFileSync(path.join(publicDir, '_redirects'), cleanRedirectsContent, 'utf8');

@@ -1,4 +1,4 @@
-FROM node:20-bookworm-slim
+FROM node:22-bookworm-slim
 
 # Install system dependencies required for headless Chromium
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -38,7 +38,7 @@ WORKDIR /app
 COPY package*.json ./
 
 # Install production dependencies
-RUN npm ci --only=production
+RUN npm ci --omit=dev
 
 # Install Playwright Chromium browser binary
 RUN npx playwright install chromium

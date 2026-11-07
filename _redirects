@@ -1,4 +1,3 @@
 # FLIQ Static Routing Configuration
-# Client-side SPA routing is handled natively by Cloudflare Pages (via 200.html / index.html),
-# Netlify (via netlify.toml), and Vercel (via vercel.json).
-# Conflicting 200 rewrite rules are omitted to prevent Cloudflare redirect loops [code: 100324].
+# Client-side SPA routing is handled natively by Cloudflare Pages, Netlify, and Vercel.
+# Conflicting rewrite rules are omitted to prevent Cloudflare redirect loops [code: 100324].
