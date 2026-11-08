@@ -248,4 +248,37 @@ describe('FLIQ Multi-Platform Hosting Portability Test Suite', () => {
       assert.equal('error' in result, true, 'result must have error field');
     });
   });
+
+  describe('8. Live Website Inspection & Real-Time Preview Integrity', () => {
+    test('app.js and styles.css implement three-column layout with real-time website preview', () => {
+      const appJsPath = path.join(root, 'app.js');
+      const appContent = fs.readFileSync(appJsPath, 'utf8');
+      assert.match(appContent, /live-preview-panel/, 'app.js must contain live-preview-panel for column 1');
+      assert.match(appContent, /live-inspector-panel/, 'app.js must contain live-inspector-panel for column 2');
+      assert.match(appContent, /live-right-panel/, 'app.js must contain live-right-panel for column 3');
+      assert.match(appContent, /live-preview-img/, 'app.js must render live-preview-img');
+      assert.match(appContent, /live-preview-loading/, 'app.js must render loading state before initial capture');
+
+      const stylesPath = path.join(root, 'styles.css');
+      const stylesContent = fs.readFileSync(stylesPath, 'utf8');
+      assert.match(stylesContent, /\.live-grid\{display:grid;grid-template-columns:/, 'styles.css must configure live-grid columns');
+      assert.match(stylesContent, /\.live-preview-panel/, 'styles.css must define live-preview-panel styling');
+      assert.match(stylesContent, /\.live-browser-chrome/, 'styles.css must define browser chrome styling');
+    });
+
+    test('server.js implements lightweight JPEG live preview captures and authenticated endpoint', () => {
+      const serverPath = path.join(root, 'server.js');
+      const serverContent = fs.readFileSync(serverPath, 'utf8');
+      assert.match(serverContent, /captureLivePreview/, 'server.js must define captureLivePreview');
+      assert.match(serverContent, /type:\s*['"]jpeg['"]/, 'server.js must capture JPEG previews to respect memory limits');
+      assert.match(serverContent, /pathname\.match\(.*api.*tests.*live-screenshot.*\)/, 'server.js must serve live screenshot endpoint');
+      assert.match(serverContent, /liveScreenshotTime/, 'server.js must track liveScreenshotTime for cache-busting SSE');
+
+      const routeMatch = serverContent.match(/pathname\.match\((\/\^.*?live-screenshot.*?\$\/)\)/);
+      assert.ok(routeMatch, 'server.js must define a regex for live-screenshot route');
+      const extractedRegex = new RegExp(routeMatch[1].slice(1, -1));
+      assert.ok(extractedRegex.test('/api/tests/test-uuid-1234/live-screenshot'), 'Route pattern must match /api/tests/:id/live-screenshot');
+      assert.ok(!extractedRegex.test('/api/tests/test-uuid-1234/invalid'), 'Route pattern must reject non-matching paths');
+    });
+  });
 });

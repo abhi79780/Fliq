@@ -493,6 +493,41 @@ async function executeTest(job) {
       ]
     });
     const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
+    const liveScreenshotFile = `${job.id}-live.jpeg`;
+    const liveScreenshotPath = path.join(dataDir, liveScreenshotFile);
+
+    async function captureLivePreview(quality = 70) {
+      try {
+        if (!page || page.isClosed()) return false;
+        await page.screenshot({
+          path: liveScreenshotPath,
+          type: 'jpeg',
+          quality,
+          fullPage: false,
+          timeout: 2500
+        });
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    // Early visual preview as soon as DOM content is parsed
+    page.on('domcontentloaded', async () => {
+      try {
+        const captured = await captureLivePreview(65);
+        if (captured) {
+          await update({
+            progress: 24,
+            stage: 'Opening website',
+            currentUrl: page.url() || url,
+            liveScreenshot: liveScreenshotFile,
+            liveScreenshotTime: Date.now()
+          });
+        }
+      } catch {}
+    });
+
     const issues = [];
     const mainOrigin = new URL(url).origin;
 
@@ -631,18 +666,17 @@ async function executeTest(job) {
 
     // Reset scroll to top before live preview capture
     await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
-    await page.waitForTimeout(200);
+    await page.waitForTimeout(150);
 
     // Capture initial live preview screenshot
-    const liveScreenshotFile = `${job.id}-live.png`;
-    const liveScreenshotPath = path.join(dataDir, liveScreenshotFile);
-    await page.screenshot({ path: liveScreenshotPath, fullPage: false }).catch(() => {});
+    await captureLivePreview(75);
 
     await update({
       progress: 28,
       stage: 'Opening website',
       currentUrl: finalUrl,
       liveScreenshot: liveScreenshotFile,
+      liveScreenshotTime: Date.now(),
       httpStatus: response?.status() ?? null,
       issues: [...issues]
     });
@@ -736,7 +770,8 @@ async function executeTest(job) {
     } catch (a11yErr) {
       console.error('[FLIQ] Accessibility scan error:', a11yErr.message);
     }
-    await update({ progress: 48, stage: 'Inspecting accessibility', currentUrl: finalUrl, issues: [...issues], liveScreenshot: liveScreenshotFile });
+    await captureLivePreview(70);
+    await update({ progress: 48, stage: 'Inspecting accessibility', currentUrl: finalUrl, issues: [...issues], liveScreenshot: liveScreenshotFile, liveScreenshotTime: Date.now() });
 
     // 4. Testing functionality
     await update({ progress: 50, stage: 'Testing functionality', currentUrl: finalUrl });
@@ -836,7 +871,8 @@ async function executeTest(job) {
       }
     } catch {}
 
-    await update({ progress: 62, stage: 'Testing functionality', currentUrl: finalUrl, issues: [...issues], liveScreenshot: liveScreenshotFile });
+    await captureLivePreview(70);
+    await update({ progress: 62, stage: 'Testing functionality', currentUrl: finalUrl, issues: [...issues], liveScreenshot: liveScreenshotFile, liveScreenshotTime: Date.now() });
 
     // 5. Measuring performance
     await update({ progress: 65, stage: 'Measuring performance', currentUrl: finalUrl });
@@ -866,7 +902,7 @@ async function executeTest(job) {
     } catch (perfErr) {
       console.error('[FLIQ] Performance scan error:', perfErr.message);
     }
-    await update({ progress: 72, stage: 'Measuring performance', currentUrl: finalUrl, issues: [...issues], liveScreenshot: liveScreenshotFile });
+    await update({ progress: 72, stage: 'Measuring performance', currentUrl: finalUrl, issues: [...issues], liveScreenshot: liveScreenshotFile, liveScreenshotTime: Date.now() });
 
     // 6. Checking SEO
     await update({ progress: 75, stage: 'Checking SEO', currentUrl: finalUrl });
@@ -977,7 +1013,7 @@ async function executeTest(job) {
     } catch (secErr) {
       console.error('[FLIQ] Security scan error:', secErr.message);
     }
-    await update({ progress: 90, stage: 'Auditing security', currentUrl: finalUrl, issues: [...issues], liveScreenshot: liveScreenshotFile });
+    await update({ progress: 90, stage: 'Auditing security', currentUrl: finalUrl, issues: [...issues], liveScreenshot: liveScreenshotFile, liveScreenshotTime: Date.now() });
 
     // 8. Generating report
     await update({ progress: 95, stage: 'Generating report', currentUrl: finalUrl });
@@ -1004,6 +1040,7 @@ async function executeTest(job) {
       await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
       await page.waitForTimeout(150);
       await page.screenshot({ path: desktop, fullPage: false, timeout: 6000 });
+      await captureLivePreview(80);
       await fs.copyFile(desktop, liveScreenshotPath).catch(() => {});
     } catch (dErr) {
       console.warn('[FLIQ] Desktop screenshot non-fatal warning:', dErr.message);
@@ -1136,7 +1173,9 @@ async function executeTest(job) {
       pagesDiscovered: discoveredLinks.length,
       pagesInspected: 1,
       pagesSkipped: Math.max(0, discoveredLinks.length - 1),
-      screenshots: [`${job.id}-desktop.png`, `${job.id}-tablet.png`, `${job.id}-mobile.png`]
+      screenshots: [`${job.id}-desktop.png`, `${job.id}-tablet.png`, `${job.id}-mobile.png`],
+      liveScreenshot: liveScreenshotFile,
+      liveScreenshotTime: Date.now()
     });
   } catch (e) {
     let message = e.message;
@@ -1533,18 +1572,57 @@ const server=http.createServer(async(req,res)=>{
     const liveShotMatch = pathname.match(/^\/api\/tests\/([\w-]+)\/live-screenshot$/);
     if (liveShotMatch && req.method === 'GET') {
       const testId = liveShotMatch[1];
-      const liveFile = path.join(dataDir, `${testId}-live.png`);
       try {
-        const b = await fs.readFile(liveFile);
-        res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'no-cache, no-store, must-revalidate' });
+        const user = await verifiedUser(req);
+        let j = (await readDB()).find(x => x.id === testId);
+        if (!j && adminApp && user.uid !== 'local') {
+          const d = await cloud().collection('tests').doc(testId).get();
+          if (d.exists) j = d.data();
+        }
+        if (!j) return send(res, 404, { error: 'Test not found.' });
+
+        const isOwner = user.uid === j.owner;
+        const isShared = Array.isArray(j.sharedWithUids) && j.sharedWithUids.includes(user.uid);
+        if (!isOwner && !isShared && (adminApp || user.uid !== 'local' || j.owner !== 'local')) {
+          return send(res, 403, { error: 'Access denied.' });
+        }
+      } catch (authErr) {
+        return send(res, authErr.status || 401, { error: authErr.message });
+      }
+
+      const jpegFile = path.join(dataDir, `${testId}-live.jpeg`);
+      const pngFile = path.join(dataDir, `${testId}-live.png`);
+      const desktopFile = path.join(dataDir, `${testId}-desktop.png`);
+
+      try {
+        const b = await fs.readFile(jpegFile);
+        res.writeHead(200, {
+          'content-type': 'image/jpeg',
+          'cache-control': 'no-cache, no-store, must-revalidate',
+          'access-control-allow-origin': origin && isOriginAllowed(origin) ? origin : '*'
+        });
         return res.end(b);
       } catch {
         try {
-          const b = await fs.readFile(path.join(dataDir, `${testId}-desktop.png`));
-          res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'no-cache, no-store, must-revalidate' });
+          const b = await fs.readFile(pngFile);
+          res.writeHead(200, {
+            'content-type': 'image/png',
+            'cache-control': 'no-cache, no-store, must-revalidate',
+            'access-control-allow-origin': origin && isOriginAllowed(origin) ? origin : '*'
+          });
           return res.end(b);
         } catch {
-          return send(res, 404, { error: 'Live screenshot not ready.' });
+          try {
+            const b = await fs.readFile(desktopFile);
+            res.writeHead(200, {
+              'content-type': 'image/png',
+              'cache-control': 'no-cache, no-store, must-revalidate',
+              'access-control-allow-origin': origin && isOriginAllowed(origin) ? origin : '*'
+            });
+            return res.end(b);
+          } catch {
+            return send(res, 404, { error: 'Live screenshot not ready.' });
+          }
         }
       }
     }

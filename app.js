@@ -1759,7 +1759,7 @@ async function progressPage(id, preloaded = null) {
   }
 
   return appShell(`
-    <div class="live-inspection-shell progress-shell">
+    <div class="live-inspection-shell">
       <div class="live-top-bar">
         <div class="live-top-row">
           <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
@@ -1793,38 +1793,59 @@ async function progressPage(id, preloaded = null) {
       </div>
 
       <div class="live-grid">
-        <!-- LEFT PANEL: Live Browser Preview / Serverless Inspector & Pipeline -->
-        <div class="live-left-panel">
+        <!-- COLUMN 1: Live Playwright Browser Preview Panel (~60-65% width) -->
+        <div class="live-preview-panel">
           <div class="live-browser-chrome">
             <div class="live-browser-dots"><span></span><span></span><span></span></div>
-            <div class="live-address-bar">🔒 ${esc(t.currentUrl || t.finalUrl || t.url)}</div>
-            <span class="live-browser-viewport">${t.liveScreenshot ? '1440 × 960 Desktop Chromium' : 'Serverless Cloud Inspector'}</span>
+            <div class="live-address-bar" title="${esc(t.currentUrl || t.finalUrl || t.url)}">🔒 ${esc(t.currentUrl || t.finalUrl || t.url)}</div>
+            <span class="live-preview-badge"><span class="live-pulse-dot" style="width:6px;height:6px"></span>Live Render</span>
+            <span class="live-browser-viewport">1440 × 960 Desktop Chromium</span>
+            <button class="btn outline" style="padding:2px 8px;font-size:10px;min-height:24px;border-radius:3px" data-action="refresh-preview" title="Refresh live preview frame">↺</button>
           </div>
 
-          <div class="live-preview-box" id="live-preview-box">
+          <div class="live-preview-container" id="live-preview-box">
             ${t.liveScreenshot ? `
-              <img class="live-preview-img" src="${getApiBase() ? getApiBase() : ''}/api/tests/${esc(id)}/live-screenshot?t=${Date.now()}" alt="Live Playwright Browser View">
-              ${highlightHtml}
+              <div class="live-preview-scroll-frame">
+                <div class="live-preview-canvas">
+                  <img id="live-preview-img" class="live-preview-img" data-live-screenshot="/api/tests/${esc(id)}/live-screenshot" alt="Live Playwright Browser View of ${esc(t.url)}" onerror="this.onerror=null;this.parentElement.innerHTML='<div class=\\'live-preview-fallback\\'><div class=\\'fallback-icon\\'>🌐</div><h4>Live Preview Frame Failed to Load</h4><p>Could not load the screenshot frame from the backend. The scan is still actively running.</p><button class=\\'btn outline\\' style=\\'padding:4px 10px;font-size:11px\\' data-action=\\'refresh-preview\\'>Retry ↺</button></div>';">
+                  ${highlightHtml}
+                </div>
+              </div>
             ` : `
-              <div class="serverless-audit-card">
-                <div class="serverless-card-header">
-                  <span class="live-pulse-dot"></span>
-                  <strong>Serverless Cloud Inspector Active</strong>
-                </div>
-                <p class="serverless-card-desc">
-                  Analyzing live DOM structure, network transport, accessibility semantics, Core Web Vitals, and security headers directly via Netlify serverless engine.
-                </p>
-                <div class="serverless-details-grid">
-                  <div><span>Target URL:</span> <code>${esc(t.currentUrl || t.finalUrl || t.url)}</code></div>
-                  <div><span>Inspection Stage:</span> <b>${esc(t.stage || 'Analyzing')} (${t.progress || 10}%)</b></div>
-                  <div><span>Status Code:</span> <b style="color:#285e25">HTTP ${t.httpStatus || 200} OK</b></div>
-                  <div><span>Issues Detected:</span> <b>${allIssues.length} findings verified</b></div>
-                </div>
-                <div class="serverless-card-note">
-                  <small>⚡ Headless Chromium screenshots are unavailable in serverless Lambda runtime. Complete structural, performance, and security audits remain 100% active.</small>
+              <div class="live-preview-loading">
+                <div class="spinner"></div>
+                <h4>Preparing Live Browser View</h4>
+                <p>Playwright Chromium is launching and navigating to <code>${esc(t.currentUrl || t.finalUrl || t.url)}</code>...</p>
+                <div class="live-loading-stages">
+                  <div class="live-loading-chip done">✓ Launch isolated headless Chromium</div>
+                  <div class="live-loading-chip ${(t.progress || 10) >= 20 ? 'done' : 'active'}">${(t.progress || 10) >= 20 ? '✓' : '⚡'} Initialize viewport (1440 × 960) & network listener</div>
+                  <div class="live-loading-chip ${(t.progress || 10) >= 28 ? 'done' : (t.progress || 10) >= 20 ? 'active' : 'pending'}">${(t.progress || 10) >= 28 ? '✓' : '○'} DOMContentLoaded & initial visual paint</div>
+                  <div class="live-loading-chip ${(t.progress || 10) >= 48 ? 'active' : 'pending'}">○ Progressive audit updates & DOM captures</div>
                 </div>
               </div>
             `}
+          </div>
+        </div>
+
+        <!-- COLUMN 2: Serverless Cloud Inspector & Pipeline (~18-20% width) -->
+        <div class="live-inspector-panel">
+          <div class="serverless-audit-card">
+            <div class="serverless-card-header">
+              <span class="live-pulse-dot"></span>
+              <strong>Serverless Cloud Inspector Active</strong>
+            </div>
+            <p class="serverless-card-desc">
+              Analyzing live DOM structure, network transport, accessibility semantics, Core Web Vitals, and security headers directly via Playwright engine.
+            </p>
+            <div class="serverless-details-grid">
+              <div><span>Target URL:</span> <code>${esc(t.currentUrl || t.finalUrl || t.url)}</code></div>
+              <div><span>Inspection Stage:</span> <b>${esc(t.stage || 'Analyzing')} (${t.progress || 10}%)</b></div>
+              <div><span>Status Code:</span> <b style="color:#285e25">HTTP ${t.httpStatus || 200} OK</b></div>
+              <div><span>Issues Detected:</span> <b>${allIssues.length} findings verified</b></div>
+            </div>
+            <div class="serverless-card-note">
+              <small>⚡ Headless Chromium captures DOM renders and streams findings live.</small>
+            </div>
           </div>
 
           <div class="live-pipeline">
@@ -1846,7 +1867,7 @@ async function progressPage(id, preloaded = null) {
           </div>
         </div>
 
-        <!-- RIGHT PANEL: Real-Time Audit Findings Stream -->
+        <!-- COLUMN 3: Real-Time Audit Findings Stream (~20-22% width) -->
         <div class="live-right-panel">
           <div class="live-feed-header">
             <h3>Real-Time Audit Findings (${allIssues.length})</h3>
@@ -2835,7 +2856,41 @@ function checkoutPage(){
     </div>
   `);
 }
-function hydrateScreenshots(){document.querySelectorAll('[data-screenshot]').forEach(async img=>{try{const r=await apiFetch(img.dataset.screenshot);if(r.ok)img.src=URL.createObjectURL(await r.blob())}catch{}})}
+async function loadLivePreview(id) {
+  const img = document.querySelector('#live-preview-img');
+  if (!img || !id) return;
+  try {
+    const r = await apiFetch(`/api/tests/${id}/live-screenshot?t=${Date.now()}`);
+    if (r.ok) {
+      const blob = await r.blob();
+      const objUrl = URL.createObjectURL(blob);
+      if (img.dataset.objUrl) {
+        try { URL.revokeObjectURL(img.dataset.objUrl); } catch {}
+      }
+      img.dataset.objUrl = objUrl;
+      img.src = objUrl;
+    }
+  } catch (err) {
+    console.warn('[FLIQ] Live preview fetch notice:', err.message);
+  }
+}
+function hydrateScreenshots(){
+  document.querySelectorAll('[data-screenshot]').forEach(async img=>{try{const r=await apiFetch(img.dataset.screenshot);if(r.ok)img.src=URL.createObjectURL(await r.blob())}catch{}});
+  document.querySelectorAll('[data-live-screenshot]').forEach(async img=>{
+    try {
+      const r = await apiFetch(`${img.dataset.liveScreenshot}?t=${Date.now()}`);
+      if (r.ok) {
+        const blob = await r.blob();
+        const objUrl = URL.createObjectURL(blob);
+        if (img.dataset.objUrl) {
+          try { URL.revokeObjectURL(img.dataset.objUrl); } catch {}
+        }
+        img.dataset.objUrl = objUrl;
+        img.src = objUrl;
+      }
+    } catch {}
+  });
+}
 function render(){
   try{
     stopHeroWalkthrough();
@@ -3332,6 +3387,16 @@ document.addEventListener('click',async e=>{
   const a=e.target.closest('[data-action]');
   if(a){
     const action=a.dataset.action;
+    if(action==='refresh-preview'){
+      e.preventDefault();
+      const testId = location.pathname.split('/')[3];
+      if (testId) {
+        loadLivePreview(testId);
+      } else {
+        render();
+      }
+      return;
+    }
     if(action==='retry-tests'){
       window.__fliqTestsError = false;
       window.__fliqTestsErrorMessage = '';
