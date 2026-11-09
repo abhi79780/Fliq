@@ -1,6 +1,9 @@
 import { describe, test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   verifyPolarWebhookSignature,
   generatePolarWebhookSignature,
@@ -989,6 +992,51 @@ describe('FLIQ Polar Payment Webhooks Test Suite', () => {
       assert.equal(data.checkoutId, 'chk_http_1');
       assert.equal(data.plan, 'creator');
       assert.equal(data.interval, 'monthly');
+    });
+  });
+
+  describe('6. Checkout Button & Client Delegation Verification', () => {
+    const rootDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+
+    test('app.js defines #start-checkout-btn with proper attributes and non-conflicting dataset', async () => {
+      const appJs = await fs.readFile(path.join(rootDir, 'app.js'), 'utf8');
+
+      // Verify button selector exists and has data-action="start-checkout"
+      assert.match(appJs, /id="start-checkout-btn"/, 'Checkout button must have id="start-checkout-btn"');
+      assert.match(appJs, /data-action="start-checkout"/, 'Checkout button must have data-action="start-checkout"');
+      assert.match(appJs, /type="button"/, 'Checkout button must have type="button" to prevent accidental form submits');
+
+      // Verify button does NOT have conflicting unscoped data-period that clashes with the pricing toggle
+      assert.doesNotMatch(appJs, /id="start-checkout-btn"[^>]*\sdata-period=/, 'Button must not have bare data-period attribute');
+    });
+
+    test('app.js scopes [data-period] listener so checkout button clicks cannot trigger billing period toggle', async () => {
+      const appJs = await fs.readFile(path.join(rootDir, 'app.js'), 'utf8');
+
+      // Verify that data-period listener is scoped to .billing container
+      assert.match(appJs, /closest\('\.billing'\)\s*\?\s*e\.target\.closest\('\[data-period\]'\)/, 'data-period click listener must be scoped to .billing container');
+    });
+
+    test('app.js prioritizes checkout button delegation at the top of click listener', async () => {
+      const appJs = await fs.readFile(path.join(rootDir, 'app.js'), 'utf8');
+
+      // Verify handleCheckoutButtonClick function exists
+      assert.match(appJs, /async function handleCheckoutButtonClick\(/, 'handleCheckoutButtonClick function must be implemented');
+
+      // Verify it is intercepted at the top of document.addEventListener('click')
+      const listenerIdx = appJs.indexOf("document.addEventListener('click'");
+      const checkoutCheckIdx = appJs.indexOf("e.target.closest('#start-checkout-btn, [data-action=\"start-checkout\"]')");
+      const periodCheckIdx = appJs.indexOf("e.target.closest('.billing')");
+
+      assert.ok(listenerIdx > 0, 'Click listener must exist');
+      assert.ok(checkoutCheckIdx > listenerIdx, 'Checkout check must be inside click listener');
+      assert.ok(checkoutCheckIdx < periodCheckIdx, 'Checkout check must occur before period toggle check');
+    });
+
+    test('app.js authHeaders attaches Authorization: Bearer <token>', async () => {
+      const appJs = await fs.readFile(path.join(rootDir, 'app.js'), 'utf8');
+
+      assert.match(appJs, /Authorization:\s*`Bearer \$\{token\}`/, 'authHeaders must attach Authorization header with Bearer token');
     });
   });
 

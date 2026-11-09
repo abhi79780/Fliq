@@ -367,7 +367,10 @@ async function authHeaders(){
   if(!user||typeof user.getIdToken!=='function'){return {};}
   try{
     const token=await user.getIdToken();
-    return{authorization:`Bearer ${token}`};
+    return {
+      authorization: `Bearer ${token}`,
+      Authorization: `Bearer ${token}`
+    };
   }catch(e){
     console.error('[FLIQ] authHeaders: getIdToken() threw:',e?.code,e?.message);
     return {};
@@ -2888,7 +2891,7 @@ function checkoutPage(){
             <strong style="display:block;color:#201d1a;margin-bottom:2px">Secure Payment via Polar</strong>
             Subscription billing is securely processed by Polar. Entitlements activate automatically once payment is verified.
           </div>
-          <button class="btn black full" id="start-checkout-btn" data-action="start-checkout" data-plan="${esc(plan.name.toLowerCase())}" data-period="${esc(periodParam)}">Proceed to Checkout →</button>
+          <button type="button" class="btn black full" id="start-checkout-btn" data-action="start-checkout" data-checkout-plan="${esc(plan.name.toLowerCase())}" data-checkout-period="${esc(periodParam)}" data-plan="${esc(plan.name.toLowerCase())}" data-billing-period="${esc(periodParam)}">Proceed to Checkout →</button>
           <div id="checkout-error" style="color:#b91c1c;font-size:12px;margin-top:10px;text-align:center;line-height:1.4" role="alert" aria-live="polite"></div>
           <div style="margin-top:12px;text-align:center">
             <a href="/pricing" data-route style="font-size:12px;color:#716c65;text-decoration:none">Choose another plan</a>
@@ -3310,7 +3313,66 @@ function poll(id) {
   subscribeLiveScan(id);
 }
 
+async function handleCheckoutButtonClick(btn) {
+  if (!btn) return;
+  const planName = (btn.dataset.checkoutPlan || btn.dataset.plan || 'creator').toLowerCase();
+  const periodName = (btn.dataset.checkoutPeriod || btn.dataset.billingPeriod || btn.dataset.period || 'monthly').toLowerCase();
+  const errEl = document.querySelector('#checkout-error');
+  if (errEl) errEl.textContent = '';
+  btn.disabled = true;
+  const originalText = btn.textContent;
+  btn.textContent = 'Preparing checkout…';
+
+  console.log('[FLIQ Checkout] Initiating Polar checkout request:', { plan: planName, period: periodName });
+
+  try {
+    const res = await apiFetch('/api/checkout/polar', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'accept': 'application/json'
+      },
+      body: JSON.stringify({
+        plan: planName,
+        interval: periodName,
+        period: periodName
+      })
+    });
+
+    const data = await res.json().catch(() => ({}));
+    console.log('[FLIQ Checkout] Server response status:', res.status, data);
+
+    if (!res.ok) {
+      throw new Error(data.error || `Checkout failed (HTTP ${res.status}). Please try again.`);
+    }
+
+    if (data.checkoutUrl) {
+      btn.textContent = 'Redirecting to Polar…';
+      console.log('[FLIQ Checkout] Redirecting to Polar checkout URL:', data.checkoutUrl);
+      window.location.href = data.checkoutUrl;
+      return;
+    }
+
+    throw new Error('No checkout URL received from server.');
+  } catch (checkoutErr) {
+    console.error('[FLIQ Checkout] Checkout error:', checkoutErr);
+    if (errEl) {
+      errEl.textContent = checkoutErr.message || 'Unable to connect to payment provider.';
+    }
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
+}
+window.handleCheckoutButtonClick = handleCheckoutButtonClick;
+window.initiatePolarCheckout = handleCheckoutButtonClick;
+
 document.addEventListener('click',async e=>{
+  const checkoutBtn=e.target.closest('#start-checkout-btn, [data-action="start-checkout"]');
+  if(checkoutBtn){
+    e.preventDefault();
+    await handleCheckoutButtonClick(checkoutBtn);
+    return;
+  }
   const logoLink=e.target.closest('.logo-link');
   if(logoLink){
     e.preventDefault();
@@ -3385,7 +3447,7 @@ document.addEventListener('click',async e=>{
     return;
   }
   if(e.target.closest('[data-close]')){modal=false;render();return}
-  const p=e.target.closest('[data-period]');if(p){period=p.dataset.period;render();return}
+  const p=e.target.closest('.billing')?e.target.closest('[data-period]'):null;if(p){period=p.dataset.period;render();return}
   const t=e.target.closest('[data-tab]');if(t){activeTab=t.dataset.tab;render();return}
   const liveCatBtn = e.target.closest('[data-live-cat]');
   if (liveCatBtn) {
@@ -3444,36 +3506,7 @@ document.addEventListener('click',async e=>{
     const action=a.dataset.action;
     if(action==='start-checkout'){
       e.preventDefault();
-      const planName = a.dataset.plan || 'creator';
-      const periodName = a.dataset.period || 'monthly';
-      const errEl = document.querySelector('#checkout-error');
-      if (errEl) errEl.textContent = '';
-      a.disabled = true;
-      const originalText = a.textContent;
-      a.textContent = 'Preparing checkout…';
-
-      try {
-        const res = await apiFetch('/api/checkout/polar', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ plan: planName, period: periodName })
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          throw new Error(data.error || 'Failed to initiate checkout. Please try again.');
-        }
-        if (data.checkoutUrl) {
-          a.textContent = 'Redirecting to Polar…';
-          window.location.href = data.checkoutUrl;
-          return;
-        }
-        throw new Error('No checkout URL received from server.');
-      } catch (checkoutErr) {
-        console.error('[FLIQ] Checkout error:', checkoutErr);
-        if (errEl) errEl.textContent = checkoutErr.message || 'Unable to connect to payment provider.';
-        a.disabled = false;
-        a.textContent = originalText;
-      }
+      await handleCheckoutButtonClick(a);
       return;
     }
     if(action==='refresh-preview'){
