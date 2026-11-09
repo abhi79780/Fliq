@@ -322,7 +322,8 @@ window.fliqAuth={
   getResolvedUser:()=>resolvedAuthUser,
   handlePlanSelect,
   navigatePostAuth,
-  signOut: executeSignOut
+  signOut: executeSignOut,
+  authHeaders
 };
 function friendlyFirebaseAuthError(error){const messages={'auth/popup-closed-by-user':'The sign-in window was closed before finishing.','auth/popup-blocked':'Your browser blocked the sign-in window. Allow popups for this site and try again.','auth/unauthorized-domain':'This local host is not authorized in Firebase Authentication. Add it to Firebase Authentication → Settings → Authorized domains.','auth/operation-not-allowed':'This sign-in method is not enabled in Firebase Authentication.','auth/account-exists-with-different-credential':'An account with this email already uses another sign-in method. Sign in with that method first.','auth/email-already-in-use':'An account already exists for this email. Sign in instead.','auth/invalid-email':'Enter a valid email address.','auth/weak-password':'Choose a stronger password (at least 6 characters).','auth/invalid-credential':'Email or password is incorrect.','auth/invalid-login-credentials':'Email or password is incorrect.','auth/user-disabled':'This account is disabled.','auth/too-many-requests':'Too many attempts. Wait a little and try again.','auth/network-request-failed':'Could not reach Firebase. Check your connection and try again.','auth/invalid-api-key':'The Firebase Web API key is invalid. Check the Web App configuration in .env.'};return messages[error?.code]||'Firebase could not complete the request. Check your details and try again.'}
 async function signInWithOAuth(button){const message=document.querySelector('#oauth-message'),buttons=[...document.querySelectorAll('[data-oauth]')];if(!message)return;buttons.forEach(x=>x.disabled=true);message.textContent='Connecting to Google…';try{await firebaseStatusPromise;if(!firebaseWebConfigured)throw Error('Firebase Web Authentication is not ready. Missing: '+(firebaseWebMissing.join(', ')||'Web App configuration')+'.');
@@ -368,7 +369,6 @@ async function authHeaders(){
   try{
     const token=await user.getIdToken();
     return {
-      authorization: `Bearer ${token}`,
       Authorization: `Bearer ${token}`
     };
   }catch(e){
@@ -380,7 +380,11 @@ async function apiFetch(url,options={}){
   await firebaseStatusPromise;
   const base = getApiBase();
   const resolvedUrl = (url.startsWith('/api') && base) ? (base + url) : url;
-  const headers = { ...options.headers, ...(await authHeaders()) };
+  const auth = await authHeaders();
+  const headers = { ...options.headers, ...auth };
+  if ('Authorization' in headers && 'authorization' in headers) {
+    delete headers.authorization;
+  }
   return fetch(resolvedUrl, { ...options, headers });
 }
 const logo='<a href="/" class="logo-link" data-route aria-label="FLIQ Home"><img class="logo" src="/public/fliq-logo.png" onerror="this.onerror=null;this.src=\'/fliq-logo.png\'" alt="FLIQ"></a>';

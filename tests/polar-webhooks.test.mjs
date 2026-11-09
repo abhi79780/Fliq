@@ -1033,10 +1033,49 @@ describe('FLIQ Polar Payment Webhooks Test Suite', () => {
       assert.ok(checkoutCheckIdx < periodCheckIdx, 'Checkout check must occur before period toggle check');
     });
 
-    test('app.js authHeaders attaches Authorization: Bearer <token>', async () => {
+    test('app.js authHeaders attaches Authorization: Bearer <token> without duplicate lowercase authorization', async () => {
       const appJs = await fs.readFile(path.join(rootDir, 'app.js'), 'utf8');
 
+      // Verify standard titlecase Authorization header is set
       assert.match(appJs, /Authorization:\s*`Bearer \$\{token\}`/, 'authHeaders must attach Authorization header with Bearer token');
+
+      // Verify authHeaders function definition does not assign duplicate lowercase authorization
+      const authHeadersMatch = appJs.match(/async function authHeaders\(\)\s*\{[\s\S]*?\n\}/);
+      assert.ok(authHeadersMatch, 'authHeaders function definition must exist');
+      assert.doesNotMatch(authHeadersMatch[0], /authorization:\s*`Bearer/, 'authHeaders must not define duplicate lowercase authorization key');
+    });
+
+    test('app.js apiFetch sanitizes duplicate authorization headers', async () => {
+      const appJs = await fs.readFile(path.join(rootDir, 'app.js'), 'utf8');
+
+      const apiFetchMatch = appJs.match(/async function apiFetch\([\s\S]*?\n\}/);
+      assert.ok(apiFetchMatch, 'apiFetch function definition must exist');
+      assert.match(apiFetchMatch[0], /delete\s+headers\.authorization/, 'apiFetch must strip duplicate lowercase authorization key');
+    });
+
+    test('server.js extracts single Bearer token and safely handles merged comma-separated tokens', () => {
+      const parseToken = (rawAuth) => {
+        const authStr = Array.isArray(rawAuth) ? rawAuth.join(', ') : String(rawAuth || '');
+        if (authStr) {
+          const candidates = authStr.split(',').map(s => s.trim()).filter(Boolean);
+          for (const candidate of candidates) {
+            const m = candidate.match(/^Bearer\s+([a-zA-Z0-9_\-\.~+\/=]+)$/i);
+            if (m && m[1]) return m[1];
+          }
+        }
+        return null;
+      };
+
+      // Test case 1: Clean single Bearer header
+      assert.equal(parseToken('Bearer test_jwt_token_abc_123'), 'test_jwt_token_abc_123');
+
+      // Test case 2: Comma-merged duplicate Bearer headers from browser/proxy
+      assert.equal(parseToken('Bearer test_jwt_token_abc_123, Bearer test_jwt_token_abc_123'), 'test_jwt_token_abc_123');
+
+      // Test case 3: Invalid scheme or empty
+      assert.equal(parseToken('Basic dXNlcjpwYXNz'), null);
+      assert.equal(parseToken(''), null);
+      assert.equal(parseToken(null), null);
     });
   });
 

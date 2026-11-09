@@ -227,7 +227,23 @@ async function verifiedUser(req, options = {}) {
     }
   }
 
-  const token = req.headers.authorization?.match(/^Bearer (.+)$/i)?.[1];
+  let token = null;
+  const rawAuth = req.headers.authorization || req.headers['Authorization'];
+  const authStr = Array.isArray(rawAuth) ? rawAuth.join(', ') : String(rawAuth || '');
+  if (authStr) {
+    const candidates = authStr.split(',').map(s => s.trim()).filter(Boolean);
+    for (const candidate of candidates) {
+      const m = candidate.match(/^Bearer\s+([a-zA-Z0-9_\-\.~+\/=]+)$/i);
+      if (m && m[1]) {
+        token = m[1];
+        break;
+      }
+    }
+    if (!token) {
+      const m = authStr.match(/^Bearer\s+(.+)$/i);
+      if (m && m[1]) token = m[1].trim();
+    }
+  }
   if (!adminApp) {
     if (token) {
       try {
@@ -1814,7 +1830,7 @@ export function closeServer() {
   });
 }
 
-export { server, PORT, HOST, handlePolarCheckoutRequest, createPolarCheckoutSession, resolvePolarProductId };
+export { server, PORT, HOST, handlePolarCheckoutRequest, createPolarCheckoutSession, resolvePolarProductId, verifiedUser };
 
 const isMain = process.argv[1] && (path.resolve(process.argv[1]) === fileURLToPath(import.meta.url));
 if (isMain) {

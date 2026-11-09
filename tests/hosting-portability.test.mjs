@@ -281,4 +281,27 @@ describe('FLIQ Multi-Platform Hosting Portability Test Suite', () => {
       assert.ok(!extractedRegex.test('/api/tests/test-uuid-1234/invalid'), 'Route pattern must reject non-matching paths');
     });
   });
+
+  describe('9. Authentication Header Hygiene & Token Verification', () => {
+    test('app.js sets single standard Authorization header and avoids duplicate lowercase authorization', () => {
+      const appJsPath = path.join(root, 'app.js');
+      const appContent = fs.readFileSync(appJsPath, 'utf8');
+
+      // 1. Must set standard Authorization
+      assert.match(appContent, /Authorization:\s*`Bearer \$\{token\}`/, 'app.js must attach standard Authorization header');
+
+      // 2. Must not set duplicate lowercase authorization in authHeaders()
+      const authHeadersMatch = appContent.match(/async function authHeaders\(\)\s*\{[\s\S]*?\n\}/);
+      assert.ok(authHeadersMatch, 'authHeaders function definition must exist');
+      assert.doesNotMatch(authHeadersMatch[0], /authorization:\s*`Bearer/, 'authHeaders must not define lowercase authorization');
+    });
+
+    test('server.js verifiedUser middleware safely handles single and merged Bearer tokens', () => {
+      const serverPath = path.join(root, 'server.js');
+      const serverContent = fs.readFileSync(serverPath, 'utf8');
+
+      assert.match(serverContent, /candidates\s*=\s*authStr\.split\(/, 'server.js must split merged authorization tokens');
+      assert.match(serverContent, /match\(\/\^Bearer\\s\+\(\[a-zA-Z0-9_/, 'server.js must validate Bearer token pattern');
+    });
+  });
 });
