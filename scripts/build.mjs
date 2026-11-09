@@ -104,6 +104,7 @@ fs.writeFileSync(path.join(apiDir, 'health'), JSON.stringify({
   firebaseWebMissing: [],
   firebaseAdminConfigured: false,
   credentialType: 'none',
+  polarWebhookConfigured: false,
   firebaseMissing: ['Backend container required for server-side scan execution'],
   authMode: 'firebase-client'
 }, null, 2), 'utf8');

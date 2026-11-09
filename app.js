@@ -1,5 +1,6 @@
 const $=s=>document.querySelector(s), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let path=location.pathname, modal=false, period='Monthly', activeTab='Issues', issueFilter='all', testTimer, shareModalId=null, shareRecipients=[], shareMessage='';
+let selectedPricingPlan = 'Creator';
 let logoutConfirmOpen = false, isLoggingOut = false, logoutError = '';
 let productMenuCloseTimer=0;
 let firebaseConfigured=false, firebaseWebConfigured=false, firebaseAdminConfigured=false, firebaseWebMissing=[];let firebaseAuth=null,firebaseAuthSdk=null,firebaseClientPromise=null;let firebaseStatusPromise;
@@ -514,11 +515,11 @@ const plans = [
   {
     name: 'Creator',
     desc: 'Perfect for developers and individual creators.',
-    monthlyPrice: '$5',
-    yearlyPrice: '$48',
+    monthlyPrice: '$9',
+    yearlyPrice: '$84',
     unitMonthly: 'monthly',
     unitYearly: 'yearly',
-    yearlySubtext: '$4/month, billed annually at $48.',
+    yearlySubtext: '$7/month, billed annually at $84.',
     items: [
       '100 website scans per month',
       'Advanced audit reports',
@@ -532,11 +533,11 @@ const plans = [
   {
     name: 'Team',
     desc: 'For growing teams and agencies.',
-    monthlyPrice: '$9',
-    yearlyPrice: '$84',
+    monthlyPrice: '$19.99',
+    yearlyPrice: '$188',
     unitMonthly: 'monthly',
     unitYearly: 'yearly',
-    yearlySubtext: '$7/month, billed annually at $84.',
+    yearlySubtext: '$15.66/month, billed annually at $188.',
     items: [
       '500 website scans per month',
       'Advanced audit reports',
@@ -550,18 +551,27 @@ const plans = [
   }
 ];
 window.fliqPlans = plans;
+window.getSelectedPricingPlan = () => selectedPricingPlan;
+window.setSelectedPricingPlan = name => {
+  const match = plans.find(p => p.name.toLowerCase() === String(name).toLowerCase());
+  if (match) {
+    selectedPricingPlan = match.name;
+    render();
+  }
+};
 
 function pricing() {
   const isYearly = period === 'Yearly';
-  return `${nav()}<main class="pricing-page"><span class="eyebrow">PLANS THAT GROW WITH YOU</span><h1>Simple, transparent<br><em>pricing.</em></h1><p>Start for free. Upgrade when you're ready.</p><div class="billing"><button class="${!isYearly ? 'selected' : ''}" data-period="Monthly">Monthly</button><button class="${isYearly ? 'selected' : ''}" data-period="Yearly">Yearly</button><span>Save up to 22%</span></div><div class="plans">${plans.map(p => {
-    const isCreator = p.name === 'Creator';
+  const currentSelected = (selectedPricingPlan || 'Creator').toLowerCase();
+  return `${nav()}<main class="pricing-page"><span class="eyebrow">PLANS THAT GROW WITH YOU</span><h1>Simple, transparent<br><em>pricing.</em></h1><p>Start for free. Upgrade when you're ready.</p><div class="billing"><button class="${!isYearly ? 'selected' : ''}" data-period="Monthly">Monthly</button><button class="${isYearly ? 'selected' : ''}" data-period="Yearly">Yearly</button><span>Save up to 22%</span></div><div class="plans" role="radiogroup" aria-label="FLIQ pricing plans">${plans.map(p => {
+    const isSelected = p.name.toLowerCase() === currentSelected;
     const displayedPrice = isYearly ? p.yearlyPrice : p.monthlyPrice;
     const displayedUnit = isYearly ? p.unitYearly : p.unitMonthly;
     const subtext = (isYearly && p.yearlySubtext)
       ? `<div class="price-subtext">${esc(p.yearlySubtext)}</div>`
       : `<div class="price-subtext" style="visibility:hidden" aria-hidden="true">&nbsp;</div>`;
 
-    return `<article class="plan ${isCreator ? 'featured' : ''}">${isCreator ? '<b class="popular">✓</b>' : ''}<h3>${esc(p.name)}</h3><p>${esc(p.desc)}</p><div class="price">${displayedPrice}<small> / ${displayedUnit}</small></div>${subtext}<ul>${p.items.map(i => `<li>✓ &nbsp;${esc(i)}</li>`).join('')}</ul>${btn('Get started', '/signup', `btn ${isCreator ? 'black' : 'outline'} full`, `data-plan-select="${esc(p.name.toLowerCase())}" data-plan-name="${esc(p.name)}"`)}</article>`;
+    return `<article class="plan ${isSelected ? 'featured' : ''}" data-plan-card="${esc(p.name.toLowerCase())}" role="radio" aria-checked="${isSelected ? 'true' : 'false'}" tabindex="0" aria-label="${esc(p.name)} plan${isSelected ? ', currently selected' : ''}">${isSelected ? '<b class="popular" aria-hidden="true">✓</b>' : ''}<h3>${esc(p.name)}</h3><p>${esc(p.desc)}</p><div class="price">${displayedPrice}<small> / ${displayedUnit}</small></div>${subtext}<ul>${p.items.map(i => `<li>✓ &nbsp;${esc(i)}</li>`).join('')}</ul>${btn('Get started', '/signup', `btn ${isSelected ? 'black' : 'outline'} full`, `data-plan-select="${esc(p.name.toLowerCase())}" data-plan-name="${esc(p.name)}" aria-label="Get started with ${esc(p.name)} plan"`)}</article>`;
   }).join('')}</div><p class="fine-print">Simple pricing. No hidden fees. Upgrade or cancel anytime.</p></main>${footer()}`;
 }
 let authCarouselTimer = null;
@@ -3290,7 +3300,20 @@ document.addEventListener('click',async e=>{
   if(planBtn){
     e.preventDefault();
     const planName=planBtn.dataset.planSelect||'creator';
+    const match=plans.find(p=>p.name.toLowerCase()===planName.toLowerCase());
+    if(match)selectedPricingPlan=match.name;
     await handlePlanSelect(planName,(period||'monthly').toLowerCase());
+    return;
+  }
+  const planCard=e.target.closest('[data-plan-card]');
+  if(planCard){
+    e.preventDefault();
+    const planName=planCard.dataset.planCard||'creator';
+    const match=plans.find(p=>p.name.toLowerCase()===planName.toLowerCase());
+    if(match&&selectedPricingPlan!==match.name){
+      selectedPricingPlan=match.name;
+      render();
+    }
     return;
   }
   const g=e.target.closest('[data-go]');
@@ -3498,6 +3521,19 @@ document.addEventListener('click',async e=>{
 document.addEventListener('submit',async e=>{if(e.target.id!=='share-form')return;e.preventDefault();const form=e.target,email=new FormData(form).get('email'),submit=form.querySelector('button[type=submit]');if(!confirm(`Grant ${email} access to this website report, including its findings and screenshots? They must sign in to their FLIQ account. You can revoke access later.`))return;submit.disabled=true;submit.textContent='Granting access…';try{const response=await apiFetch(`/api/tests/${form.dataset.id}/shares`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({email})}),data=await response.json();shareMessage=response.ok?`Access granted to ${data.email}.`:data.error||'Could not grant access.';if(response.ok){const r=await apiFetch(`/api/tests/${form.dataset.id}/shares`),list=await r.json();shareRecipients=list.recipients||[];}render();}catch{shareMessage='Could not contact FLIQ.';render();}});
 document.addEventListener('click',e=>{const trigger=e.target.closest('[data-product-menu-trigger]');if(trigger){e.preventDefault();toggleProductMenu();return}if(e.target.closest('.product-dropdown a')){setProductMenu(false);return}if(!e.target.closest('.product-menu')&&document.querySelector('[data-product-menu-trigger][aria-expanded="true"]'))setProductMenu(false)});
 document.addEventListener('keydown', async e => {
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.closest?.('[data-plan-card]') && !e.target.closest?.('button, a')) {
+    const card = e.target.closest('[data-plan-card]');
+    const planName = card.dataset.planCard;
+    const match = plans.find(p => p.name.toLowerCase() === (planName || '').toLowerCase());
+    if (match && selectedPricingPlan !== match.name) {
+      e.preventDefault();
+      selectedPricingPlan = match.name;
+      render();
+      const newCard = document.querySelector(`[data-plan-card="${match.name.toLowerCase()}"]`);
+      if (newCard) newCard.focus();
+      return;
+    }
+  }
   if ((e.key === 'Enter' || e.key === ' ') && e.target.closest?.('.logo-link')) {
     e.preventDefault();
     await logoNavigate(e);

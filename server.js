@@ -10,10 +10,12 @@ import { initializeApp, cert, applicationDefault, getApps } from 'firebase-admin
 import { getAuth } from 'firebase-admin/auth';
 
 let getFirestore = null;
+let FieldValue = null;
 let firestoreAvailable = false;
 try {
   const fsMod = await import('firebase-admin/firestore');
   getFirestore = fsMod.getFirestore;
+  FieldValue = fsMod.FieldValue;
   firestoreAvailable = true;
 } catch (fsImportErr) {
   console.warn('[Firebase Admin] Notice: firebase-admin/firestore is unavailable:', fsImportErr.message);
@@ -35,6 +37,7 @@ import { runLiveInspectionTests } from './lib/live-inspection-tests.js';
 import { runReportConsistencyTests } from './lib/report-consistency-tests.js';
 import { runPricingVerificationTests } from './lib/pricing-tests.js';
 import { runPricingAuthTests } from './lib/pricing-auth-tests.js';
+import { handlePolarWebhookRequest } from './lib/polar-webhook.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 try { process.loadEnvFile(path.join(root, '.env')); } catch (error) { if (error.code !== 'ENOENT') console.error('[FLIQ] loadEnvFile warning:', error.message); }
@@ -1254,6 +1257,12 @@ const server=http.createServer(async(req,res)=>{
     return send(res, 200, getFirebaseWebConfig());
   }
   if(pathname.startsWith('/api/')){
+    if(pathname==='/api/webhooks/polar'){
+      if(req.method==='POST'){
+        return handlePolarWebhookRequest(req, res, { cloudDb: cloud(), localDataDir: dataDir, adminApp });
+      }
+      return send(res, 405, { error: 'Method not allowed. Polar webhooks require POST.' });
+    }
     if(pathname==='/api/firebase-config'&&req.method==='GET'){const missing=getMissingFirebaseWebFields();return send(res,200,{configured:missing.length===0,missing,config:missing.length===0?getFirebaseWebConfig():null});}
     if(pathname==='/api/health'){
       const firebaseWebMissing = getMissingFirebaseWebFields();
@@ -1279,6 +1288,7 @@ const server=http.createServer(async(req,res)=>{
         firebaseWebConfigured: firebaseWebMissing.length === 0,
         firebaseWebMissing,
         firebaseAdminConfigured,
+        polarWebhookConfigured: Boolean(process.env.POLAR_WEBHOOK_SECRET),
         credentialType,
         firebaseMissing: [...firebaseWebMissing, ...(firebaseAdminConfigured ? [] : [expectedProjectId ? `Valid ${expectedProjectId} server credential (Firebase Admin) — run: gcloud auth application-default login --project=${expectedProjectId}` : 'Valid Firebase Admin server credential required — set FIREBASE_PROJECT_ID and run: gcloud auth application-default login'])],
         authMode: firebaseAdminConfigured ? 'firebase' : 'local-preview'
