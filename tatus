@@ -1,0 +1,14 @@
+warning: in the working copy of '.env.example', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '200.html', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of '_redirects', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'api/firebase-config', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'api/health', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'app.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'lib/pricing-tests.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'package.json', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'public/200.html', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'public/_redirects', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'scripts/build.mjs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'server.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'styles.css', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'wrangler.jsonc', LF will be replaced by CRLF the next time Git touches it

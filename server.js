@@ -37,7 +37,7 @@ import { runLiveInspectionTests } from './lib/live-inspection-tests.js';
 import { runReportConsistencyTests } from './lib/report-consistency-tests.js';
 import { runPricingVerificationTests } from './lib/pricing-tests.js';
 import { runPricingAuthTests } from './lib/pricing-auth-tests.js';
-import { handlePolarWebhookRequest } from './lib/polar-webhook.js';
+import { handlePolarWebhookRequest, handlePolarCheckoutRequest, createPolarCheckoutSession, resolvePolarProductId } from './lib/polar-webhook.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 try { process.loadEnvFile(path.join(root, '.env')); } catch (error) { if (error.code !== 'ENOENT') console.error('[FLIQ] loadEnvFile warning:', error.message); }
@@ -1263,6 +1263,12 @@ const server=http.createServer(async(req,res)=>{
       }
       return send(res, 405, { error: 'Method not allowed. Polar webhooks require POST.' });
     }
+    if(pathname==='/api/checkout/polar' || pathname==='/api/checkout'){
+      if(req.method==='POST'){
+        return handlePolarCheckoutRequest(req, res, { cloudDb: cloud(), adminApp, verifiedUserFn: verifiedUser });
+      }
+      return send(res, 405, { error: 'Method not allowed. Checkout requires POST.' });
+    }
     if(pathname==='/api/firebase-config'&&req.method==='GET'){const missing=getMissingFirebaseWebFields();return send(res,200,{configured:missing.length===0,missing,config:missing.length===0?getFirebaseWebConfig():null});}
     if(pathname==='/api/health'){
       const firebaseWebMissing = getMissingFirebaseWebFields();
@@ -1808,7 +1814,7 @@ export function closeServer() {
   });
 }
 
-export { server, PORT, HOST };
+export { server, PORT, HOST, handlePolarCheckoutRequest, createPolarCheckoutSession, resolvePolarProductId };
 
 const isMain = process.argv[1] && (path.resolve(process.argv[1]) === fileURLToPath(import.meta.url));
 if (isMain) {

@@ -1551,6 +1551,36 @@ async function refreshDashboardData(force = false) {
 
 function metric(n,v,sub){return `<article class="metric"><span>${n}</span><strong>${v}</strong><small>${sub}</small></article>`}
 
+function renderCheckoutStatusBanner() {
+  const params = new URLSearchParams(location.search);
+  const checkoutStatus = params.get('checkout');
+  if (checkoutStatus === 'success') {
+    return `
+      <div class="setup-note" style="border-left-color:#22c55e;background:#f0fdf4;padding:16px 20px;border-radius:8px;margin-bottom:24px" role="status" aria-live="polite">
+        <strong style="color:#15803d;font-size:14px;display:block;margin-bottom:4px">✓ Payment Completed</strong>
+        <p style="margin:0;color:#166534;font-size:13px">Your checkout was successful! We are syncing your subscription with Polar. Your upgraded features will activate as soon as the payment confirmation is finalized.</p>
+      </div>
+    `;
+  }
+  if (checkoutStatus === 'cancel' || params.get('canceled') === 'true') {
+    return `
+      <div class="setup-note" style="border-left-color:#eab308;background:#fefce8;padding:16px 20px;border-radius:8px;margin-bottom:24px" role="status" aria-live="polite">
+        <strong style="color:#854d0e;font-size:14px;display:block;margin-bottom:4px">Checkout Canceled</strong>
+        <p style="margin:0;color:#713f12;font-size:13px">No payment was collected. You can upgrade your plan anytime from <a href="/pricing" data-route style="color:#854d0e;text-decoration:underline">Pricing</a>.</p>
+      </div>
+    `;
+  }
+  if (checkoutStatus === 'pending') {
+    return `
+      <div class="setup-note" style="border-left-color:#3b82f6;background:#eff6ff;padding:16px 20px;border-radius:8px;margin-bottom:24px" role="status" aria-live="polite">
+        <strong style="color:#1d4ed8;font-size:14px;display:block;margin-bottom:4px">Subscription Pending Confirmation</strong>
+        <p style="margin:0;color:#1e40af;font-size:13px">Your subscription request is being processed by Polar. Once verified, your account features will be updated automatically.</p>
+      </div>
+    `;
+  }
+  return '';
+}
+
 function dashboard(){
   const cached = window.__fliqCachedTests;
   const isError = window.__fliqTestsError;
@@ -1581,6 +1611,7 @@ function dashboard(){
   }
 
   return appShell(`
+    ${renderCheckoutStatusBanner()}
     <section class="welcome">
       <span class="eyebrow">YOUR WORKSPACE</span>
       <h1>Welcome back, ${esc(localStorage.getItem('fliqName') || 'there')} 👋</h1>
@@ -2854,10 +2885,11 @@ function checkoutPage(){
             <span>${esc(price)}</span>
           </div>
           <div style="padding:12px 14px;background:#f3efe8;border-radius:8px;font-size:12px;line-height:1.5;color:#5a544b;margin-bottom:18px">
-            <strong style="display:block;color:#201d1a;margin-bottom:2px">Gateway Preparation Mode</strong>
-            Lemon Squeezy integration is being configured. Paid checkouts will activate shortly. No payment will be collected at this time.
+            <strong style="display:block;color:#201d1a;margin-bottom:2px">Secure Payment via Polar</strong>
+            Subscription billing is securely processed by Polar. Entitlements activate automatically once payment is verified.
           </div>
-          <button class="btn black full" disabled style="opacity:0.8;cursor:not-allowed">Proceed to Checkout (Gateway Coming Soon)</button>
+          <button class="btn black full" id="start-checkout-btn" data-action="start-checkout" data-plan="${esc(plan.name.toLowerCase())}" data-period="${esc(periodParam)}">Proceed to Checkout →</button>
+          <div id="checkout-error" style="color:#b91c1c;font-size:12px;margin-top:10px;text-align:center;line-height:1.4" role="alert" aria-live="polite"></div>
           <div style="margin-top:12px;text-align:center">
             <a href="/pricing" data-route style="font-size:12px;color:#716c65;text-decoration:none">Choose another plan</a>
           </div>
@@ -3410,6 +3442,40 @@ document.addEventListener('click',async e=>{
   const a=e.target.closest('[data-action]');
   if(a){
     const action=a.dataset.action;
+    if(action==='start-checkout'){
+      e.preventDefault();
+      const planName = a.dataset.plan || 'creator';
+      const periodName = a.dataset.period || 'monthly';
+      const errEl = document.querySelector('#checkout-error');
+      if (errEl) errEl.textContent = '';
+      a.disabled = true;
+      const originalText = a.textContent;
+      a.textContent = 'Preparing checkout…';
+
+      try {
+        const res = await apiFetch('/api/checkout/polar', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ plan: planName, period: periodName })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(data.error || 'Failed to initiate checkout. Please try again.');
+        }
+        if (data.checkoutUrl) {
+          a.textContent = 'Redirecting to Polar…';
+          window.location.href = data.checkoutUrl;
+          return;
+        }
+        throw new Error('No checkout URL received from server.');
+      } catch (checkoutErr) {
+        console.error('[FLIQ] Checkout error:', checkoutErr);
+        if (errEl) errEl.textContent = checkoutErr.message || 'Unable to connect to payment provider.';
+        a.disabled = false;
+        a.textContent = originalText;
+      }
+      return;
+    }
     if(action==='refresh-preview'){
       e.preventDefault();
       const testId = location.pathname.split('/')[3];

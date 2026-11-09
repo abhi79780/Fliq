@@ -6,6 +6,7 @@
   "firebaseWebMissing": [],
   "firebaseAdminConfigured": false,
   "credentialType": "none",
+  "polarWebhookConfigured": false,
   "firebaseMissing": [
     "Backend container required for server-side scan execution"
   ],

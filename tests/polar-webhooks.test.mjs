@@ -7,11 +7,14 @@ import {
   getSecretBuffer,
   getPolarProductConfig,
   mapPolarProductToPlan,
+  resolvePolarProductId,
   extractUserIdFromPolarEvent,
   checkIdempotency,
   recordEventProcessed,
   processPolarWebhookEvent,
-  handlePolarWebhookRequest
+  handlePolarWebhookRequest,
+  createPolarCheckoutSession,
+  handlePolarCheckoutRequest
 } from '../lib/polar-webhook.js';
 
 // In-memory mock Firestore for offline test assertions
@@ -734,6 +737,258 @@ describe('FLIQ Polar Payment Webhooks Test Suite', () => {
       await handlePolarWebhookRequest(req2, res2, { cloudDb: mockDb, localDataDir: null });
       assert.equal(res2.statusCode, 200);
       assert.equal(res2.json().duplicate, true);
+    });
+  });
+
+  describe('7. Polar Checkout Session Creation (createPolarCheckoutSession & handlePolarCheckoutRequest)', () => {
+    function createMockFetch(status = 200, responseData = {}) {
+      let lastCall = null;
+      const fn = async (url, options = {}) => {
+        lastCall = { url, options, body: options.body ? JSON.parse(options.body) : null };
+        return {
+          ok: status >= 200 && status < 300,
+          status,
+          statusText: status === 200 ? 'OK' : 'Error',
+          text: async () => JSON.stringify(responseData),
+          json: async () => responseData
+        };
+      };
+      fn.getLastCall = () => lastCall;
+      return fn;
+    }
+
+    const testUser = {
+      uid: 'user_checkout_123',
+      email: 'founder@example.com'
+    };
+
+    beforeEach(() => {
+      process.env.POLAR_ACCESS_TOKEN = 'polar_oat_test_secret_token_xyz';
+      process.env.POLAR_PRODUCT_CREATOR_MONTHLY = 'prod_polar_cr_mo';
+      process.env.POLAR_PRODUCT_CREATOR_YEARLY = 'prod_polar_cr_yr';
+      process.env.POLAR_PRODUCT_TEAM_MONTHLY = 'prod_polar_tm_mo';
+      process.env.POLAR_PRODUCT_TEAM_YEARLY = 'prod_polar_tm_yr';
+    });
+
+    test('resolvePolarProductId resolves correct product IDs for Creator and Team plans', () => {
+      assert.equal(resolvePolarProductId('creator', 'monthly'), 'prod_polar_cr_mo');
+      assert.equal(resolvePolarProductId('creator', 'yearly'), 'prod_polar_cr_yr');
+      assert.equal(resolvePolarProductId('team', 'monthly'), 'prod_polar_tm_mo');
+      assert.equal(resolvePolarProductId('team', 'yearly'), 'prod_polar_tm_yr');
+      assert.equal(resolvePolarProductId('free', 'monthly'), null);
+      assert.equal(resolvePolarProductId('unknown', 'monthly'), null);
+    });
+
+    test('createPolarCheckoutSession successfully creates Creator Monthly session with external_id & metadata', async () => {
+      const mockFetch = createMockFetch(200, {
+        id: 'chk_polar_success_1',
+        url: 'https://buy.polar.sh/checkout/chk_polar_success_1'
+      });
+
+      const session = await createPolarCheckoutSession({
+        plan: 'creator',
+        interval: 'monthly',
+        user: testUser,
+        successUrl: 'https://fliq-ezaz.onrender.com/dashboard?checkout=success',
+        fetchFn: mockFetch
+      });
+
+      assert.equal(session.checkoutId, 'chk_polar_success_1');
+      assert.equal(session.checkoutUrl, 'https://buy.polar.sh/checkout/chk_polar_success_1');
+      assert.equal(session.plan, 'creator');
+      assert.equal(session.interval, 'monthly');
+
+      const call = mockFetch.getLastCall();
+      assert.equal(call.url, 'https://api.polar.sh/v1/checkouts/');
+      assert.equal(call.options.headers.Authorization, 'Bearer polar_oat_test_secret_token_xyz');
+      assert.deepEqual(call.body.products, ['prod_polar_cr_mo']);
+      assert.equal(call.body.customer_email, 'founder@example.com');
+      assert.equal(call.body.external_customer_id, 'user_checkout_123');
+      assert.equal(call.body.metadata.userId, 'user_checkout_123');
+      assert.equal(call.body.metadata.plan, 'creator');
+      assert.equal(call.body.customer_metadata.userId, 'user_checkout_123');
+    });
+
+    test('createPolarCheckoutSession supports Creator Yearly, Team Monthly, and Team Yearly', async () => {
+      const plansToTest = [
+        { plan: 'creator', interval: 'yearly', expectedPid: 'prod_polar_cr_yr' },
+        { plan: 'team', interval: 'monthly', expectedPid: 'prod_polar_tm_mo' },
+        { plan: 'team', interval: 'yearly', expectedPid: 'prod_polar_tm_yr' }
+      ];
+
+      for (const t of plansToTest) {
+        const mockFetch = createMockFetch(200, {
+          id: `chk_${t.plan}_${t.interval}`,
+          url: `https://buy.polar.sh/checkout/${t.plan}_${t.interval}`
+        });
+
+        const session = await createPolarCheckoutSession({
+          plan: t.plan,
+          interval: t.interval,
+          user: testUser,
+          fetchFn: mockFetch
+        });
+
+        assert.equal(session.plan, t.plan);
+        assert.equal(session.interval, t.interval);
+        const call = mockFetch.getLastCall();
+        assert.deepEqual(call.body.products, [t.expectedPid]);
+      }
+    });
+
+    test('createPolarCheckoutSession rejects invalid plans with 400 status', async () => {
+      const mockFetch = createMockFetch(200, {});
+      await assert.rejects(
+        async () => {
+          await createPolarCheckoutSession({
+            plan: 'free',
+            user: testUser,
+            fetchFn: mockFetch
+          });
+        },
+        (err) => {
+          assert.equal(err.status, 400);
+          assert.match(err.message, /Invalid plan/);
+          return true;
+        }
+      );
+    });
+
+    test('createPolarCheckoutSession rejects missing POLAR_ACCESS_TOKEN with 500 status', async () => {
+      delete process.env.POLAR_ACCESS_TOKEN;
+      const mockFetch = createMockFetch(200, {});
+
+      await assert.rejects(
+        async () => {
+          await createPolarCheckoutSession({
+            plan: 'creator',
+            user: testUser,
+            fetchFn: mockFetch
+          });
+        },
+        (err) => {
+          assert.equal(err.status, 500);
+          assert.match(err.message, /POLAR_ACCESS_TOKEN/);
+          return true;
+        }
+      );
+    });
+
+    test('createPolarCheckoutSession rejects missing product ID with 500 status', async () => {
+      delete process.env.POLAR_PRODUCT_CREATOR_MONTHLY;
+      const mockFetch = createMockFetch(200, {});
+
+      await assert.rejects(
+        async () => {
+          await createPolarCheckoutSession({
+            plan: 'creator',
+            interval: 'monthly',
+            user: testUser,
+            fetchFn: mockFetch
+          });
+        },
+        (err) => {
+          assert.equal(err.status, 500);
+          assert.match(err.message, /POLAR_PRODUCT_CREATOR_MONTHLY/);
+          return true;
+        }
+      );
+    });
+
+    test('createPolarCheckoutSession rejects unauthenticated user with 401 status', async () => {
+      const mockFetch = createMockFetch(200, {});
+
+      await assert.rejects(
+        async () => {
+          await createPolarCheckoutSession({
+            plan: 'creator',
+            user: null,
+            fetchFn: mockFetch
+          });
+        },
+        (err) => {
+          assert.equal(err.status, 401);
+          assert.match(err.message, /Authenticated user is required/);
+          return true;
+        }
+      );
+    });
+
+    test('createPolarCheckoutSession safely handles Polar API errors with 502 status', async () => {
+      const mockFetch = createMockFetch(422, { detail: 'Product does not belong to organization' });
+
+      await assert.rejects(
+        async () => {
+          await createPolarCheckoutSession({
+            plan: 'creator',
+            user: testUser,
+            fetchFn: mockFetch
+          });
+        },
+        (err) => {
+          assert.equal(err.status, 422);
+          assert.match(err.message, /Product does not belong to organization/);
+          return true;
+        }
+      );
+    });
+
+    test('handlePolarCheckoutRequest rejects non-POST requests with 405 Method Not Allowed', async () => {
+      const req = createMockRequest('GET', '');
+      const res = createMockResponse();
+
+      await handlePolarCheckoutRequest(req, res, {
+        cloudDb: null,
+        adminApp: null,
+        verifiedUserFn: async () => testUser
+      });
+
+      assert.equal(res.statusCode, 405);
+      assert.match(res.json().error, /Method not allowed/);
+    });
+
+    test('handlePolarCheckoutRequest rejects unauthenticated requests with 401 Unauthorized', async () => {
+      const req = createMockRequest('POST', JSON.stringify({ plan: 'creator' }));
+      const res = createMockResponse();
+
+      await handlePolarCheckoutRequest(req, res, {
+        cloudDb: null,
+        adminApp: null,
+        verifiedUserFn: async () => {
+          const err = new Error('Sign in to continue.');
+          err.status = 401;
+          throw err;
+        }
+      });
+
+      assert.equal(res.statusCode, 401);
+      assert.match(res.json().error, /Sign in/);
+    });
+
+    test('handlePolarCheckoutRequest returns 200 with checkout URL and details upon success', async () => {
+      const mockFetch = createMockFetch(200, {
+        id: 'chk_http_1',
+        url: 'https://buy.polar.sh/checkout/chk_http_1'
+      });
+
+      const payload = JSON.stringify({ plan: 'creator', period: 'monthly' });
+      const req = createMockRequest('POST', payload, { host: 'localhost:3000' });
+      const res = createMockResponse();
+
+      await handlePolarCheckoutRequest(req, res, {
+        cloudDb: null,
+        adminApp: null,
+        verifiedUserFn: async () => testUser,
+        fetchFn: mockFetch
+      });
+
+      assert.equal(res.statusCode, 200);
+      const data = res.json();
+      assert.equal(data.ok, true);
+      assert.equal(data.checkoutUrl, 'https://buy.polar.sh/checkout/chk_http_1');
+      assert.equal(data.checkoutId, 'chk_http_1');
+      assert.equal(data.plan, 'creator');
+      assert.equal(data.interval, 'monthly');
     });
   });
 
