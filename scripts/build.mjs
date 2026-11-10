@@ -105,6 +105,10 @@ fs.writeFileSync(path.join(apiDir, 'health'), JSON.stringify({
   firebaseAdminConfigured: false,
   credentialType: 'none',
   polarWebhookConfigured: false,
+  polarConfigured: Boolean(process.env.POLAR_ACCESS_TOKEN || process.env.POLAR_SANDBOX_ACCESS_TOKEN),
+  polarServer: (process.env.POLAR_SERVER || process.env.POLAR_ENVIRONMENT || '').trim().toLowerCase() === 'sandbox' ? 'sandbox' : 'production',
+  polarEnvironment: (process.env.POLAR_SERVER || process.env.POLAR_ENVIRONMENT || '').trim().toLowerCase() === 'sandbox' ? 'sandbox' : 'production',
+  polarApiHost: (process.env.POLAR_SERVER || process.env.POLAR_ENVIRONMENT || '').trim().toLowerCase() === 'sandbox' ? 'https://sandbox-api.polar.sh' : 'https://api.polar.sh',
   firebaseMissing: ['Backend container required for server-side scan execution'],
   authMode: 'firebase-client'
 }, null, 2), 'utf8');

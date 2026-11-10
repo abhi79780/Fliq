@@ -7,6 +7,10 @@
   "firebaseAdminConfigured": false,
   "credentialType": "none",
   "polarWebhookConfigured": false,
+  "polarConfigured": false,
+  "polarServer": "production",
+  "polarEnvironment": "production",
+  "polarApiHost": "https://api.polar.sh",
   "firebaseMissing": [
     "Backend container required for server-side scan execution"
   ],

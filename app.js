@@ -1,5 +1,6 @@
 const $=s=>document.querySelector(s), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let path=location.pathname, modal=false, period='Monthly', activeTab='Issues', issueFilter='all', testTimer, shareModalId=null, shareRecipients=[], shareMessage='';
+let upgradeModalData = null, entitlementFetchPromise = null;
 let selectedPricingPlan = 'Creator';
 let logoutConfirmOpen = false, isLoggingOut = false, logoutError = '';
 let productMenuCloseTimer=0;
@@ -222,6 +223,10 @@ async function handlePlanSelect(planName, billingPeriod = 'monthly') {
   const user = await getResolvedAuthState(2000);
 
   if (user) {
+    if (window.__fliqEntitlement && window.__fliqEntitlement.plan === plan) {
+      go('/dashboard');
+      return;
+    }
     try {
       sessionStorage.setItem('fliqSelectedPlan', plan);
       sessionStorage.setItem('fliqSelectedPeriod', periodVal);
@@ -292,6 +297,8 @@ async function executeSignOut() {
       await sdk.signOut(auth);
     }
     window.__fliqSignOutCalls = (window.__fliqSignOutCalls || 0) + 1;
+    window.__fliqEntitlement = null;
+    window.__fliqEntitlementFetchedAt = 0;
     for (const k of ['fliqName', 'fliqEmail', 'fliqToken', 'fliqRefresh', 'fliqTestUid', 'fliqUid']) {
       localStorage.removeItem(k);
     }
@@ -570,15 +577,23 @@ window.setSelectedPricingPlan = name => {
 function pricing() {
   const isYearly = period === 'Yearly';
   const currentSelected = (selectedPricingPlan || 'Creator').toLowerCase();
+  const activePlanName = (window.__fliqEntitlement?.plan || '').toLowerCase();
   return `${nav()}<main class="pricing-page"><span class="eyebrow">PLANS THAT GROW WITH YOU</span><h1>Simple, transparent<br><em>pricing.</em></h1><p>Start for free. Upgrade when you're ready.</p><div class="billing"><button class="${!isYearly ? 'selected' : ''}" data-period="Monthly">Monthly</button><button class="${isYearly ? 'selected' : ''}" data-period="Yearly">Yearly</button><span>Save up to 22%</span></div><div class="plans" role="radiogroup" aria-label="FLIQ pricing plans">${plans.map(p => {
     const isSelected = p.name.toLowerCase() === currentSelected;
+    const isCurrentPlan = Boolean(activePlanName && activePlanName === p.name.toLowerCase());
     const displayedPrice = isYearly ? p.yearlyPrice : p.monthlyPrice;
     const displayedUnit = isYearly ? p.unitYearly : p.unitMonthly;
     const subtext = (isYearly && p.yearlySubtext)
       ? `<div class="price-subtext">${esc(p.yearlySubtext)}</div>`
       : `<div class="price-subtext" style="visibility:hidden" aria-hidden="true">&nbsp;</div>`;
 
-    return `<article class="plan ${isSelected ? 'featured' : ''}" data-plan-card="${esc(p.name.toLowerCase())}" role="radio" aria-checked="${isSelected ? 'true' : 'false'}" tabindex="0" aria-label="${esc(p.name)} plan${isSelected ? ', currently selected' : ''}">${isSelected ? '<b class="popular" aria-hidden="true">✓</b>' : ''}<h3>${esc(p.name)}</h3><p>${esc(p.desc)}</p><div class="price">${displayedPrice}<small> / ${displayedUnit}</small></div>${subtext}<ul>${p.items.map(i => `<li>✓ &nbsp;${esc(i)}</li>`).join('')}</ul>${btn('Get started', '/signup', `btn ${isSelected ? 'black' : 'outline'} full`, `data-plan-select="${esc(p.name.toLowerCase())}" data-plan-name="${esc(p.name)}" aria-label="Get started with ${esc(p.name)} plan"`)}</article>`;
+    const ctaButton = isCurrentPlan
+      ? `<button class="btn outline full" disabled aria-disabled="true" style="opacity:0.75;cursor:default">Current plan ✓</button>`
+      : btn('Get started', '/signup', `btn ${isSelected ? 'black' : 'outline'} full`, `data-plan-select="${esc(p.name.toLowerCase())}" data-plan-name="${esc(p.name)}" aria-label="Get started with ${esc(p.name)} plan"`);
+
+    const currentBadge = isCurrentPlan ? `<span class="badge" style="background:#111;color:#e3fa39;font-size:9px;font-weight:700;display:inline-block;margin-bottom:8px">CURRENT PLAN</span><br>` : '';
+
+    return `<article class="plan ${isSelected ? 'featured' : ''}" data-plan-card="${esc(p.name.toLowerCase())}" role="radio" aria-checked="${isSelected ? 'true' : 'false'}" tabindex="0" aria-label="${esc(p.name)} plan${isSelected ? ', currently selected' : ''}">${isSelected ? '<b class="popular" aria-hidden="true">✓</b>' : ''}${currentBadge}<h3>${esc(p.name)}</h3><p>${esc(p.desc)}</p><div class="price">${displayedPrice}<small> / ${displayedUnit}</small></div>${subtext}<ul>${p.items.map(i => `<li>✓ &nbsp;${esc(i)}</li>`).join('')}</ul>${ctaButton}</article>`;
   }).join('')}</div><p class="fine-print">Simple pricing. No hidden fees. Upgrade or cancel anytime.</p></main>${footer()}`;
 }
 let authCarouselTimer = null;
@@ -1341,7 +1356,7 @@ function startGlobalScanTracker() {
 }
 
 const items=[['⌂','Dashboard','/dashboard'],['＋','New Test','/dashboard/new-test'],['◷','History','/dashboard/history'],['▤','Reports','/dashboard/reports'],['◎','Monitors','/dashboard/monitors'],['⚙','Settings','/dashboard/settings']];
-const side=()=>`<aside class="sidebar">${logo}<div class="side-links">${items.map(([i,n,p])=>`<a class="${path===p?'current':''}" href="${p}" data-route><span>${i}</span>${n}</a>`).join('')}</div><div class="side-bottom"><span>F</span><div>FLIQ workspace<br><small>Free plan</small></div></div></aside>`;
+const side=()=>`<aside class="sidebar">${logo}<div class="side-links">${items.map(([i,n,p])=>`<a class="${path===p?'current':''}" href="${p}" data-route><span>${i}</span>${n}</a>`).join('')}</div><div class="side-bottom"><span>F</span><div>FLIQ workspace<br><small>${esc(window.__fliqEntitlement?.planName || 'Free')} plan</small></div></div></aside>`;
 const appShell=content=>`<div class="app-layout">${side()}<main class="app-main"><header class="app-top"><input class="search" placeholder="⌕  Search tests..." aria-label="Search tests"><div class="top-icons"><button class="avatar" data-go="/dashboard/settings">${(localStorage.getItem('fliqName')||'A')[0].toUpperCase()}</button></div></header>${renderGlobalScanBanner()}${content}</main></div>`;
 let testLoadError = false;
 let testLoadMessage = '';

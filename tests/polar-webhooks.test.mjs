@@ -17,7 +17,13 @@ import {
   processPolarWebhookEvent,
   handlePolarWebhookRequest,
   createPolarCheckoutSession,
-  handlePolarCheckoutRequest
+  handlePolarCheckoutRequest,
+  isPolarSandbox,
+  getPolarServerEnvironment,
+  getPolarApiHost,
+  getPolarApiBaseUrl,
+  getPolarAccessToken,
+  buildPolarAuthHeader
 } from '../lib/polar-webhook.js';
 
 // In-memory mock Firestore for offline test assertions
@@ -766,6 +772,15 @@ describe('FLIQ Polar Payment Webhooks Test Suite', () => {
     };
 
     beforeEach(() => {
+      delete process.env.POLAR_SERVER;
+      delete process.env.POLAR_ENVIRONMENT;
+      delete process.env.POLAR_ENV;
+      delete process.env.POLAR_BASE_URL;
+      delete process.env.POLAR_SANDBOX_ACCESS_TOKEN;
+      delete process.env.POLAR_SANDBOX_PRODUCT_CREATOR_MONTHLY;
+      delete process.env.POLAR_SANDBOX_PRODUCT_CREATOR_YEARLY;
+      delete process.env.POLAR_SANDBOX_PRODUCT_TEAM_MONTHLY;
+      delete process.env.POLAR_SANDBOX_PRODUCT_TEAM_YEARLY;
       process.env.POLAR_ACCESS_TOKEN = 'polar_oat_test_secret_token_xyz';
       process.env.POLAR_PRODUCT_CREATOR_MONTHLY = 'prod_polar_cr_mo';
       process.env.POLAR_PRODUCT_CREATOR_YEARLY = 'prod_polar_cr_yr';
@@ -1076,6 +1091,130 @@ describe('FLIQ Polar Payment Webhooks Test Suite', () => {
       assert.equal(parseToken('Basic dXNlcjpwYXNz'), null);
       assert.equal(parseToken(''), null);
       assert.equal(parseToken(null), null);
+    });
+  });
+
+  describe('7. Polar Sandbox Endpoint Selection, Token Hygiene, and Environment Telemetry', () => {
+    test('isPolarSandbox detects sandbox environment across POLAR_SERVER, POLAR_ENVIRONMENT, and POLAR_ENV', () => {
+      // 1. POLAR_SERVER=sandbox
+      process.env.POLAR_SERVER = 'sandbox';
+      assert.equal(isPolarSandbox(), true);
+      assert.equal(getPolarServerEnvironment(), 'sandbox');
+      assert.equal(getPolarApiHost(), 'https://sandbox-api.polar.sh');
+      assert.equal(getPolarApiBaseUrl(), 'https://sandbox-api.polar.sh/v1');
+
+      // 2. Case-insensitivity and whitespace resilience (e.g. ' Sandbox ', 'SANDBOX', '"sandbox"')
+      process.env.POLAR_SERVER = '  Sandbox ';
+      assert.equal(isPolarSandbox(), true);
+
+      process.env.POLAR_SERVER = '"sandbox"';
+      assert.equal(isPolarSandbox(), true);
+
+      // 3. Fallback to POLAR_ENVIRONMENT or POLAR_ENV
+      delete process.env.POLAR_SERVER;
+      process.env.POLAR_ENVIRONMENT = 'sandbox';
+      assert.equal(isPolarSandbox(), true);
+
+      delete process.env.POLAR_ENVIRONMENT;
+      process.env.POLAR_ENV = 'sandbox';
+      assert.equal(isPolarSandbox(), true);
+
+      // 4. Default to production when unset or set to production
+      delete process.env.POLAR_ENV;
+      assert.equal(isPolarSandbox(), false);
+      assert.equal(getPolarServerEnvironment(), 'production');
+      assert.equal(getPolarApiHost(), 'https://api.polar.sh');
+      assert.equal(getPolarApiBaseUrl(), 'https://api.polar.sh/v1');
+
+      process.env.POLAR_SERVER = 'production';
+      assert.equal(isPolarSandbox(), false);
+      assert.equal(getPolarServerEnvironment(), 'production');
+      assert.equal(getPolarApiHost(), 'https://api.polar.sh');
+      delete process.env.POLAR_SERVER;
+    });
+
+    test('createPolarCheckoutSession routes requests to https://sandbox-api.polar.sh when POLAR_SERVER=sandbox', async () => {
+      process.env.POLAR_SERVER = 'sandbox';
+      process.env.POLAR_ACCESS_TOKEN = 'polar_oat_sandbox_token_123';
+      process.env.POLAR_PRODUCT_CREATOR_MONTHLY = 'prod_sandbox_creator_mo';
+
+      let capturedUrl = null;
+      let capturedHeaders = null;
+      const mockFetch = async (url, opts) => {
+        capturedUrl = url;
+        capturedHeaders = opts.headers;
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ id: 'chk_sb_1', url: 'https://sandbox.polar.sh/checkout/chk_sb_1' })
+        };
+      };
+
+      const session = await createPolarCheckoutSession({
+        plan: 'creator',
+        interval: 'monthly',
+        user: { uid: 'usr_sb_1', email: 'test@sandbox.local' },
+        fetchFn: mockFetch
+      });
+
+      assert.equal(session.checkoutUrl, 'https://sandbox.polar.sh/checkout/chk_sb_1');
+      assert.equal(capturedUrl, 'https://sandbox-api.polar.sh/v1/checkouts/');
+      assert.equal(capturedHeaders.Authorization, 'Bearer polar_oat_sandbox_token_123');
+
+      delete process.env.POLAR_SERVER;
+    });
+
+    test('buildPolarAuthHeader and getPolarAccessToken sanitize tokens and strip accidental "Bearer " prefixes', () => {
+      // 1. Clean token
+      assert.equal(buildPolarAuthHeader('polar_oat_clean_token'), 'Bearer polar_oat_clean_token');
+
+      // 2. Token with accidental "Bearer " prefix (common copy-paste error)
+      assert.equal(buildPolarAuthHeader('Bearer polar_oat_token_with_prefix'), 'Bearer polar_oat_token_with_prefix');
+      assert.equal(buildPolarAuthHeader('bearer polar_oat_lowercase_bearer'), 'Bearer polar_oat_lowercase_bearer');
+
+      // 3. Token with surrounding quotes and whitespace
+      assert.equal(buildPolarAuthHeader('  "polar_oat_quoted_token"  '), 'Bearer polar_oat_quoted_token');
+
+      // 4. getPolarAccessToken prioritizes POLAR_SANDBOX_ACCESS_TOKEN in sandbox mode
+      process.env.POLAR_SERVER = 'sandbox';
+      process.env.POLAR_ACCESS_TOKEN = 'prod_token_should_not_be_used';
+      process.env.POLAR_SANDBOX_ACCESS_TOKEN = 'polar_oat_sandbox_dedicated';
+      assert.equal(getPolarAccessToken(), 'polar_oat_sandbox_dedicated');
+      assert.equal(buildPolarAuthHeader(), 'Bearer polar_oat_sandbox_dedicated');
+
+      delete process.env.POLAR_SERVER;
+      delete process.env.POLAR_SANDBOX_ACCESS_TOKEN;
+    });
+
+    test('getPolarProductConfig resolves POLAR_SANDBOX_PRODUCT_* in sandbox mode with fallback to standard variables', () => {
+      process.env.POLAR_SERVER = 'sandbox';
+      process.env.POLAR_SANDBOX_PRODUCT_CREATOR_MONTHLY = 'sb_prod_cr_mo';
+      process.env.POLAR_PRODUCT_CREATOR_YEARLY = 'fallback_prod_cr_yr';
+
+      const cfg = getPolarProductConfig();
+      assert.equal(cfg.creatorMonthlyId, 'sb_prod_cr_mo');
+      assert.equal(cfg.creatorYearlyId, 'fallback_prod_cr_yr');
+      assert.equal(resolvePolarProductId('creator', 'monthly'), 'sb_prod_cr_mo');
+      assert.equal(resolvePolarProductId('creator', 'yearly'), 'fallback_prod_cr_yr');
+
+      delete process.env.POLAR_SERVER;
+      delete process.env.POLAR_SANDBOX_PRODUCT_CREATOR_MONTHLY;
+    });
+
+    test('server.js /api/health endpoint includes Polar environment without exposing credentials', async () => {
+      const rootDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+      const serverPath = path.join(rootDir, 'server.js');
+      const serverContent = await fs.readFile(serverPath, 'utf8');
+
+      // Health endpoint must report environment and host
+      assert.match(serverContent, /polarServer:\s*getPolarServerEnvironment\(\)/);
+      assert.match(serverContent, /polarEnvironment:\s*getPolarServerEnvironment\(\)/);
+      assert.match(serverContent, /polarApiHost:\s*getPolarApiHost\(\)/);
+
+      // Must never leak access token or secrets
+      const healthSection = serverContent.slice(serverContent.indexOf("pathname==='/api/health'"), serverContent.indexOf("isTestRoute ="));
+      assert.doesNotMatch(healthSection, /process\.env\.POLAR_ACCESS_TOKEN\b(?!.*\bBoolean\b)/, 'Health route must not expose raw POLAR_ACCESS_TOKEN');
+      assert.doesNotMatch(healthSection, /process\.env\.POLAR_WEBHOOK_SECRET\b(?!.*\bBoolean\b)/, 'Health route must not expose raw POLAR_WEBHOOK_SECRET');
     });
   });
 

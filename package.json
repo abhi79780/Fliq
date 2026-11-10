@@ -16,6 +16,7 @@
     "test:pricing": "node tests/pricing.test.mjs",
     "test:pricing-auth": "node tests/pricing-auth.test.mjs",
     "test:polar": "node --test tests/polar-webhooks.test.mjs",
+    "test:entitlements": "node --test tests/entitlements.test.mjs",
     "test:e2e": "node --test tests/e2e.test.js",
     "test:scan-ui": "node tests/run-ui-scan.mjs",
     "test:portability": "node --test tests/hosting-portability.test.mjs",

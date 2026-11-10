@@ -37,7 +37,24 @@ import { runLiveInspectionTests } from './lib/live-inspection-tests.js';
 import { runReportConsistencyTests } from './lib/report-consistency-tests.js';
 import { runPricingVerificationTests } from './lib/pricing-tests.js';
 import { runPricingAuthTests } from './lib/pricing-auth-tests.js';
-import { handlePolarWebhookRequest, handlePolarCheckoutRequest, createPolarCheckoutSession, resolvePolarProductId } from './lib/polar-webhook.js';
+import {
+  handlePolarWebhookRequest,
+  handlePolarCheckoutRequest,
+  createPolarCheckoutSession,
+  resolvePolarProductId,
+  getPolarServerEnvironment,
+  getPolarApiHost,
+  getPolarAccessToken,
+  isPolarSandbox,
+  buildPolarAuthHeader
+} from './lib/polar-webhook.js';
+import {
+  getUserEntitlement,
+  checkAndIncrementScanUsage,
+  filterTestsByRetention,
+  generateReportPdfBuffer,
+  PLAN_CONFIGS
+} from './lib/entitlements.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 try { process.loadEnvFile(path.join(root, '.env')); } catch (error) { if (error.code !== 'ENOENT') console.error('[FLIQ] loadEnvFile warning:', error.message); }
@@ -1285,6 +1302,15 @@ const server=http.createServer(async(req,res)=>{
       }
       return send(res, 405, { error: 'Method not allowed. Checkout requires POST.' });
     }
+    if((pathname==='/api/subscription' || pathname==='/api/user/subscription') && req.method==='GET'){
+      try {
+        const user = await verifiedUser(req);
+        const entitlement = await getUserEntitlement(user.uid, { db: cloud(), localDataDir: dataDir });
+        return send(res, 200, entitlement);
+      } catch (e) {
+        return send(res, e.status || 401, { error: e.message });
+      }
+    }
     if(pathname==='/api/firebase-config'&&req.method==='GET'){const missing=getMissingFirebaseWebFields();return send(res,200,{configured:missing.length===0,missing,config:missing.length===0?getFirebaseWebConfig():null});}
     if(pathname==='/api/health'){
       const firebaseWebMissing = getMissingFirebaseWebFields();
@@ -1311,6 +1337,10 @@ const server=http.createServer(async(req,res)=>{
         firebaseWebMissing,
         firebaseAdminConfigured,
         polarWebhookConfigured: Boolean(process.env.POLAR_WEBHOOK_SECRET),
+        polarConfigured: Boolean(getPolarAccessToken()),
+        polarServer: getPolarServerEnvironment(),
+        polarEnvironment: getPolarServerEnvironment(),
+        polarApiHost: getPolarApiHost(),
         credentialType,
         firebaseMissing: [...firebaseWebMissing, ...(firebaseAdminConfigured ? [] : [expectedProjectId ? `Valid ${expectedProjectId} server credential (Firebase Admin) — run: gcloud auth application-default login --project=${expectedProjectId}` : 'Valid Firebase Admin server credential required — set FIREBASE_PROJECT_ID and run: gcloud auth application-default login'])],
         authMode: firebaseAdminConfigured ? 'firebase' : 'local-preview'
@@ -1537,33 +1567,40 @@ const server=http.createServer(async(req,res)=>{
           }
         }
         const userTests = [...docs.values()].sort((a,b)=>String(b.createdAt||'').localeCompare(String(a.createdAt||'')));
-        return send(res,200,userTests.map(({owner,sharedWithUids,...safe})=>safe));
+        const entitlement = await getUserEntitlement(user.uid, { db: cloud(), localDataDir: dataDir });
+        const retainedTests = filterTestsByRetention(userTests, entitlement.historyRetentionDays);
+        return send(res,200,retainedTests.map(({owner,sharedWithUids,...safe})=>safe));
       }catch(e){return send(res,e.status||401,{error:e.message});}
     }
     if(pathname==='/api/tests'&&req.method==='POST'){
       let body='';for await(const c of req){body+=c;if(body.length>2000){res.destroy();return;}}
       try { 
         const user=await verifiedUser(req);
-        const {url}=JSON.parse(body); 
+        const {url, isPriority}=JSON.parse(body); 
         const valid=await validateTarget(url); 
         const jobs=await reconcileStaleJobs(180000);
         const ownerId = user.uid;
         const active=jobs.filter(j=>j.owner===ownerId&&(j.status==='running'||j.status==='queued')).length;
         if(active>=Number(process.env.FLIQ_MAX_ACTIVE_TESTS||1))return send(res,429,{error:'You already have an active test. Wait for it to finish before starting another.'});
-        const since=Date.now()-86400000;
-        const daily=jobs.filter(j=>j.owner===ownerId&&Date.parse(j.createdAt)>since).length;
-        if(daily>=Number(process.env.FLIQ_DAILY_TEST_LIMIT||5))return send(res,429,{error:'Your daily test limit has been reached. Try again tomorrow.'});
-        const job={id:randomUUID(),url:valid.url,hostname:valid.hostname,status:'queued',progress:0,stage:'Queued',createdAt:new Date().toISOString(),owner:ownerId,isDemo:false}; 
+
+        // Enforce monthly scan limits atomically per plan entitlement
+        const usageResult = await checkAndIncrementScanUsage(ownerId, {
+          db: cloud(),
+          localDataDir: dataDir,
+          isPriority: Boolean(isPriority || req.headers['x-fliq-priority'] === 'true')
+        });
+
+        const job={id:randomUUID(),url:valid.url,hostname:valid.hostname,status:'queued',progress:0,stage:'Queued',createdAt:new Date().toISOString(),owner:ownerId,isDemo:false,isAdvanced:usageResult.plan!=='free',plan:usageResult.plan}; 
         jobs.unshift(job); 
         await saveDB(jobs); 
         if(adminApp && cloud() && user.uid!=='local'){
           try { await cloud().collection('tests').doc(job.id).set(job); }
           catch(fsErr) { console.error('[FLIQ] Initial Firestore test save warning:', fsErr.message); }
         }
-        send(res,202,job); 
+        send(res,202,{...job, usage: usageResult}); 
         executeTest(job).catch(err => console.error('[FLIQ] Background test execution error:', err));
       }
-      catch(e){send(res,e.status||400,{error:e.message||'Invalid request.'});} return;
+      catch(e){send(res,e.status||400,{error:e.message,code:e.code,details:e.details});} return;
     }
     const sseMatch = pathname.match(/^\/api\/tests\/([\w-]+)\/events$/);
     if (sseMatch && req.method === 'GET') {
@@ -1659,7 +1696,17 @@ const server=http.createServer(async(req,res)=>{
       }
     }
     const shares=pathname.match(/^\/api\/tests\/([\w-]+)\/shares(?:\/([\w-]+))?$/);if(shares){
-      try{const user=await verifiedUser(req);if(!adminApp||user.uid==='local')return send(res,503,{error:'Signed-in sharing requires Firebase Authentication and Firestore.'});const ref=cloud().collection('tests').doc(shares[1]),snap=await ref.get(),report=snap.exists?snap.data():null;if(!report||report.owner!==user.uid)return send(res,404,{error:'Test not found.'});const uids=Array.isArray(report.sharedWithUids)?report.sharedWithUids:[];
+      try{
+        const user=await verifiedUser(req);
+        const entitlement = await getUserEntitlement(user.uid, { db: cloud(), localDataDir: dataDir });
+        if (!entitlement.allowTeamCollaboration) {
+          return send(res, 403, {
+            error: 'Team collaboration requires a Team subscription.',
+            code: 'UPGRADE_REQUIRED',
+            requiredPlan: 'team'
+          });
+        }
+        if(!adminApp||user.uid==='local')return send(res,503,{error:'Signed-in sharing requires Firebase Authentication and Firestore.'});const ref=cloud().collection('tests').doc(shares[1]),snap=await ref.get(),report=snap.exists?snap.data():null;if(!report||report.owner!==user.uid)return send(res,404,{error:'Test not found.'});const uids=Array.isArray(report.sharedWithUids)?report.sharedWithUids:[];
         if(req.method==='GET'){const recipients=await Promise.all(uids.map(async uid=>{try{const u=await getAuth(adminApp).getUser(uid);return {uid,email:u.email||''};}catch{return {uid,email:'Account unavailable'};}}));return send(res,200,{recipients});}
         if(req.method==='POST'){let body='';for await(const c of req){body+=c;if(body.length>2000){res.destroy();return;}}const email=String(JSON.parse(body).email||'').trim().toLowerCase();if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))return send(res,400,{error:'Enter a valid account email.'});let recipient;try{recipient=await getAuth(adminApp).getUserByEmail(email);}catch{return send(res,404,{error:'The recipient must create a FLIQ account before you can share this report.'});}if(recipient.uid===user.uid)return send(res,400,{error:'This report already belongs to your account.'});if(!uids.includes(recipient.uid)){uids.push(recipient.uid);await ref.set({sharedWithUids:uids},{merge:true});const local=await readDB(),idx=local.findIndex(x=>x.id===shares[1]);if(idx>=0){local[idx].sharedWithUids=uids;await saveDB(local);}}return send(res,200,{uid:recipient.uid,email:recipient.email||email,shared:true});}
         if(req.method==='DELETE'&&shares[2]){const next=uids.filter(uid=>uid!==shares[2]);await ref.set({sharedWithUids:next},{merge:true});const local=await readDB(),idx=local.findIndex(x=>x.id===shares[1]);if(idx>=0){local[idx].sharedWithUids=next;await saveDB(local);}return send(res,200,{revoked:true});}
@@ -1670,6 +1717,14 @@ const server=http.createServer(async(req,res)=>{
     if(regen&&req.method==='POST'){
       try{
         const user=await verifiedUser(req);
+        const entitlement = await getUserEntitlement(user.uid, { db: cloud(), localDataDir: dataDir });
+        if (!entitlement.allowAiExplanations) {
+          return send(res, 403, {
+            error: 'AI bug explanations require a Creator or Team subscription.',
+            code: 'UPGRADE_REQUIRED',
+            requiredPlan: 'creator'
+          });
+        }
         const testId=regen[1];
         let testDoc=null;
         const localDb=await readDB();
@@ -1699,6 +1754,56 @@ const server=http.createServer(async(req,res)=>{
         return send(res,200,{success:true,aiSummary:testDoc.aiSummary,issues:testDoc.issues,isAiGenerated:testDoc.isAiGenerated,aiGeneratedAt:testDoc.aiGeneratedAt});
       }catch(e){return send(res,e.status||500,{error:e.message});}
     }
+    const pdfMatch = pathname.match(/^\/api\/tests\/([\w-]+)\/export-pdf$/);
+    if(pdfMatch && req.method === 'GET'){
+      try{
+        const user = await verifiedUser(req);
+        const testId = pdfMatch[1];
+        const entitlement = await getUserEntitlement(user.uid, { db: cloud(), localDataDir: dataDir });
+        if (!entitlement.allowPdfExport) {
+          return send(res, 403, {
+            error: 'PDF report exports require a Creator or Team subscription.',
+            code: 'UPGRADE_REQUIRED',
+            requiredPlan: 'creator'
+          });
+        }
+        let j = null;
+        if (adminApp && cloud() && user.uid !== 'local') {
+          try {
+            const d = await cloud().collection('tests').doc(testId).get();
+            if (d.exists) j = d.data();
+          } catch {}
+        }
+        if (!j) j = (await readDB()).find(x => x.id === testId);
+        if (!j) return send(res, 404, { error: 'Test not found.' });
+
+        const isOwner = user.uid === j.owner;
+        const isShared = Array.isArray(j.sharedWithUids) && j.sharedWithUids.includes(user.uid);
+        if (!isOwner && !isShared && (adminApp || user.uid !== 'local' || j.owner !== 'local')) {
+          return send(res, 403, { error: 'Access denied.' });
+        }
+
+        const isRetained = filterTestsByRetention([j], entitlement.historyRetentionDays).length > 0;
+        if (!isRetained) {
+          return send(res, 403, {
+            error: `This report is older than your ${entitlement.planName} plan's ${entitlement.historyRetentionDays}-day retention limit. Upgrade to access extended history.`,
+            code: 'UPGRADE_REQUIRED',
+            requiredPlan: entitlement.plan === 'free' ? 'creator' : 'team'
+          });
+        }
+
+        const reportFilename = `fliq-report-${j.hostname || testId}.pdf`;
+        const pdfBuf = generateReportPdfBuffer(j);
+        res.writeHead(200, {
+          'content-type': 'application/pdf',
+          'content-disposition': `attachment; filename="${reportFilename}"`,
+          'cache-control': 'no-store'
+        });
+        return res.end(pdfBuf);
+      } catch (e) {
+        return send(res, e.status || 401, { error: e.message });
+      }
+    }
     const m=pathname.match(/^\/api\/tests\/([\w-]+)$/); 
     if(m&&req.method==='GET'){
       try{
@@ -1721,8 +1826,19 @@ const server=http.createServer(async(req,res)=>{
         if(!isOwner && !isShared && (adminApp || user.uid !== 'local' || j.owner !== 'local')) {
           return send(res,404,{error:'Test not found or access denied.'});
         }
+
+        const entitlement = await getUserEntitlement(user.uid, { db: cloud(), localDataDir: dataDir });
+        const isRetained = filterTestsByRetention([j], entitlement.historyRetentionDays).length > 0;
+        if (!isRetained) {
+          return send(res, 403, {
+            error: `This report is older than your ${entitlement.planName} plan's ${entitlement.historyRetentionDays}-day retention limit. Upgrade to access extended history.`,
+            code: 'UPGRADE_REQUIRED',
+            requiredPlan: entitlement.plan === 'free' ? 'creator' : 'team'
+          });
+        }
+
         const {owner,sharedWithUids,...safe}=j;
-        return send(res,200,{...safe,canManageSharing:isOwner});
+        return send(res,200,{...safe,canManageSharing:isOwner && entitlement.allowTeamCollaboration});
       }catch(e){return send(res,e.status||401,{error:e.message});}
     }
     const sm=pathname.match(/^\/api\/screenshots\/([\w-]+\.png)$/); 
@@ -1830,7 +1946,25 @@ export function closeServer() {
   });
 }
 
-export { server, PORT, HOST, handlePolarCheckoutRequest, createPolarCheckoutSession, resolvePolarProductId, verifiedUser };
+export {
+  server,
+  PORT,
+  HOST,
+  handlePolarCheckoutRequest,
+  createPolarCheckoutSession,
+  resolvePolarProductId,
+  getPolarServerEnvironment,
+  getPolarApiHost,
+  getPolarAccessToken,
+  isPolarSandbox,
+  buildPolarAuthHeader,
+  verifiedUser,
+  getUserEntitlement,
+  checkAndIncrementScanUsage,
+  filterTestsByRetention,
+  generateReportPdfBuffer,
+  PLAN_CONFIGS
+};
 
 const isMain = process.argv[1] && (path.resolve(process.argv[1]) === fileURLToPath(import.meta.url));
 if (isMain) {

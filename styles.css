@@ -1002,3 +1002,84 @@
   background: #b91c1c !important;
   border-color: #b91c1c !important;
 }
+
+/* Dashboard Subscription Usage & Entitlements */
+.usage-card {
+  background: #fffdfa;
+  border: 1px solid #ded9d2;
+  border-radius: 8px;
+  padding: 18px 22px;
+  margin: 18px 0 24px;
+}
+.usage-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.usage-card-plan {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.usage-card-stats {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+.usage-card-stats strong {
+  font-size: 14px;
+  color: #111;
+}
+.usage-card-stats span {
+  font-size: 12px;
+  color: #716c66;
+}
+.usage-progress-track {
+  height: 8px;
+  background: #ede8e1;
+  border-radius: 999px;
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+.usage-progress-bar {
+  height: 100%;
+  border-radius: inherit;
+  transition: width 0.3s ease;
+}
+.usage-card-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 11px;
+  color: #716c66;
+}
+.usage-card-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+@media (max-width: 650px) {
+  .usage-card {
+    padding: 14px 16px;
+    margin: 14px 0 18px;
+  }
+  .usage-card-header {
+    margin-bottom: 10px;
+  }
+  .usage-card-stats {
+    flex-direction: column;
+    gap: 4px;
+  }
+  .usage-card-footer {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+}

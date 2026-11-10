@@ -247,6 +247,15 @@ describe('FLIQ Multi-Platform Hosting Portability Test Suite', () => {
       assert.equal('connected' in result, true, 'result must have connected boolean field');
       assert.equal('error' in result, true, 'result must have error field');
     });
+
+    test('server.js exports Polar environment helpers and reports environment telemetry', async () => {
+      const { getPolarServerEnvironment, getPolarApiHost, isPolarSandbox } = await import('../server.js');
+      assert.equal(typeof getPolarServerEnvironment, 'function');
+      assert.equal(typeof getPolarApiHost, 'function');
+      assert.equal(typeof isPolarSandbox, 'function');
+      assert.equal(getPolarServerEnvironment(), 'production');
+      assert.equal(getPolarApiHost(), 'https://api.polar.sh');
+    });
   });
 
   describe('8. Live Website Inspection & Real-Time Preview Integrity', () => {
