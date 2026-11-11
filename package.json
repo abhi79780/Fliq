@@ -25,6 +25,7 @@
     "test:e2e": "node --test tests/e2e.test.js",
     "test:scan-ui": "node tests/run-ui-scan.mjs",
     "test:portability": "node --test tests/hosting-portability.test.mjs",
+    "test:legal": "node --test tests/legal-pages.test.mjs",
     "test:netlify": "node tests/netlify-api-verification.test.mjs",
     "deploy:pages": "wrangler pages deploy . --project-name fliq"
   },

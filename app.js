@@ -593,7 +593,63 @@ const go=p=>{
 window.onpopstate=()=>{path=location.pathname;render()};window.onhashchange=()=>render();
 const btn=(label,p,cls='btn black',attrs='')=>`<button class="${cls}" data-go="${p}" ${attrs}>${label}</button>`;
 const nav=()=>`<header class="topnav">${logo}<div class="product-menu"><button type="button" class="nav-product" data-product-menu-trigger aria-expanded="false" aria-controls="product-dropdown" aria-haspopup="menu">Product <svg class="product-chevron" viewBox="0 0 12 12" aria-hidden="true"><path d="m3 4.5 3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button><div class="product-dropdown" id="product-dropdown" role="menu" aria-label="Product and resources" hidden><section class="product-menu-group"><h2>PRODUCT</h2><a href="/features#automated-testing" role="menuitem"><span class="product-menu-icon icon-pink">◉</span><span><b>Website Testing</b><small>Automatically test websites using a real browser.</small></span></a><a href="/features#ai-analysis" role="menuitem"><span class="product-menu-icon icon-lime">✳</span><span><b>AI Bug Analysis</b><small>Understand detected errors and their potential causes.</small></span></a><a href="/features#test-reports" role="menuitem"><span class="product-menu-icon icon-pink">▧</span><span><b>Test Reports</b><small>Review findings, screenshots, and recommended fixes.</small></span></a></section><section class="product-menu-group"><h2>RESOURCES</h2><a href="/#how-it-works" role="menuitem"><span class="product-menu-icon icon-lime">↗</span><span><b>How It Works</b><small>See how FLIQ tests a website step by step.</small></span></a><a href="/docs" role="menuitem"><span class="product-menu-icon icon-pink">⌘</span><span><b>Documentation</b><small>Learn how to use FLIQ.</small></span></a><a href="/pricing" role="menuitem"><span class="product-menu-icon icon-lime">$</span><span><b>Pricing</b><small>Compare available plans.</small></span></a></section></div></div><nav><a href="/features" data-route>Features</a><a href="/pricing" data-route>Pricing</a><a href="/docs" data-route>Docs</a><a href="/blog" data-route>Blog</a></nav>${btn('Get started','/signup','btn black nav-cta')}<button class="menu-toggle" aria-label="Open navigation" aria-expanded="false">☰</button></header>`;const artwork=(kind='pink')=>`<div class="art ${kind}"><div class="scribble"></div><div class="art-window"><div class="dots">● ● ●</div><div class="mini-line"></div><div class="mini-row"><i></i><i></i><i></i></div><div class="mini-line short"></div><div class="mini-line"></div><span class="check">✓</span></div><div class="pixel" aria-hidden="true"></div><div class="art-caption">${kind==='blue'?'Test. Fix.\nShip. Repeat.':'Better websites\nstart here.'}</div></div>`;
-const footer=()=>`<footer>© 2026 FLIQ <span>Test. Fix. Ship. Repeat.</span><a href="/docs" data-route>Documentation</a></footer>`;
+const footer=()=>`<footer class="site-footer" role="contentinfo">
+  <div class="footer-container">
+    <div class="footer-cta-band">
+      <div class="footer-cta-copy">
+        <h2 class="footer-cta-heading">Spend less time finding bugs.<br><strong>More time building great things.</strong></h2>
+      </div>
+      <div class="footer-cta-action">
+        <button class="btn black footer-cta-btn" data-go="/signup" aria-label="Run your first test">Run your first test</button>
+      </div>
+    </div>
+    <div class="footer-inner">
+      <div class="footer-brand-block">
+        <div class="footer-logo-row">
+          ${logo}
+        </div>
+        <p class="footer-desc">AI-powered website testing and automated QA. Real browser execution, evidence-based issue detection, and step-by-step actionable fixes.</p>
+        <div class="footer-support-box">
+          <span class="footer-support-label">CUSTOMER SUPPORT</span>
+          <a href="mailto:supportfliq.ai@gmail.com" class="footer-support-email" aria-label="Email Customer Support at supportfliq.ai@gmail.com">
+            <svg class="footer-support-icon" viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="4.5" width="15" height="11" rx="2"/><path d="m3.5 5.5 6.5 5 6.5-5"/></svg>
+            <span>supportfliq.ai@gmail.com</span>
+          </a>
+        </div>
+      </div>
+      <div class="footer-group">
+        <h3 class="footer-group-title">PRODUCT</h3>
+        <ul class="footer-link-list">
+          <li><a href="/features#automated-testing" data-route>Automated Testing</a></li>
+          <li><a href="/features#ai-analysis" data-route>AI Bug Analysis</a></li>
+          <li><a href="/features#test-reports" data-route>Test Reports</a></li>
+          <li><a href="/pricing" data-route>Pricing</a></li>
+          <li><a href="/docs" data-route>Documentation</a></li>
+        </ul>
+      </div>
+      <div class="footer-group">
+        <h3 class="footer-group-title">COMPANY</h3>
+        <ul class="footer-link-list">
+          <li><a href="/about" data-route>About FLIQ</a></li>
+          <li><a href="/contact" data-route>Contact Support</a></li>
+          <li><a href="/blog" data-route>Blog</a></li>
+        </ul>
+      </div>
+      <div class="footer-group">
+        <h3 class="footer-group-title">LEGAL</h3>
+        <ul class="footer-link-list">
+          <li><a href="/privacy-policy" data-route>Privacy Policy</a></li>
+          <li><a href="/terms-of-service" data-route>Terms of Service</a></li>
+          <li><a href="/refund-policy" data-route>Refund Policy</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-bottom-bar">
+      <p class="footer-copyright">© 2026 FLIQ. All rights reserved.</p>
+      <p class="footer-bottom-support">Support: <a href="mailto:supportfliq.ai@gmail.com">supportfliq.ai@gmail.com</a></p>
+    </div>
+  </div>
+</footer>`;
 let heroWalkthroughRoot=null, heroWalkthroughTimers=[], heroWalkthroughFrame=0, heroWalkthroughRun=0, heroWalkthroughMotion=null, heroWalkthroughMotionHandler=null, heroWalkthroughResizeHandler=null;
 const heroWalkthroughStages=[
   {id:'opening',duration:2500,from:0,to:15,status:'Simulated demo: Opening sample website...'},
@@ -665,7 +721,7 @@ function pdCursor(selector){const root=productDemoRoot,target=root?.querySelecto
 function pdSetStage(stage,progress,status){const root=productDemoRoot;if(!root)return;const stageChanged=root.dataset.stage!==stage;root.dataset.stage=stage;root.querySelector('.pd-stage-copy').textContent=status;const fill=root.querySelector('.pd-progress i'),bar=root.querySelector('.pd-progress'),pct=root.querySelector('.pd-percent');fill.style.width=`${progress}%`;bar.setAttribute('aria-valuenow',String(progress));pct.textContent=`${progress}%`;root.querySelectorAll('.pd-row').forEach((row,i)=>{const done=stage==='complete'||stage==='ai'||stage==='issue'||(stage==='testing'&&(i===0||(i===1&&progress>=34)||(i===2&&progress>=45)))||(stage==='opening'&&i===0&&progress>=15);const active=(stage==='opening'&&i===0)||(stage==='testing'&&((i===1&&progress<34)||(i===2&&progress>=34&&progress<45)))||(stage==='issue'&&i===3)||(stage==='ai'&&i===3);row.dataset.state=done?'done':active?'active':'pending'});if(stageChanged){root.querySelectorAll('[data-pd-target]').forEach(el=>el.classList.remove('is-tested','is-failed'));root.querySelector('.pd-cursor').classList.remove('is-visible');root.querySelector('.pd-ripple').classList.remove('is-active')}}
 function pdVisit(selector,failed=false){const root=productDemoRoot,target=root?.querySelector(selector);if(!root||!target)return;pdCursor(selector);target.classList.toggle('is-failed',failed);target.classList.toggle('is-tested',!failed);const r=target.getBoundingClientRect(),b=root.querySelector('.pd-browser').getBoundingClientRect(),rip=root.querySelector('.pd-ripple');rip.style.left=`${r.left-b.left+r.width*.52}px`;rip.style.top=`${r.top-b.top+r.height*.55}px`;rip.classList.remove('is-active');void rip.offsetWidth;rip.classList.add('is-active')}
 function runProductDemoStage(stage,run){if(run!==productDemoRun||!productDemoRoot?.isConnected)return;const root=productDemoRoot;if(stage==='opening'){pdSetStage(stage,10,'Simulated demo: Opening website...');pdCursor('.pd-address');root.querySelector('.pd-loader').classList.add('is-loading');pdLater(()=>{root.dataset.loaded='yes';root.querySelector('.pd-loader').classList.remove('is-loading');pdSetStage('opening',15,'Simulated demo: Website loaded.')},900,run);pdLater(()=>runProductDemoStage('testing',run),2200,run)}else if(stage==='testing'){pdSetStage(stage,24,'Simulated demo: Testing interactive elements...');const visits=[['.pd-nav button',350,1],['.pd-card',1150,2],['.pd-primary',2050,3]];visits.forEach(([sel,delay,p])=>pdLater(()=>{pdVisit(sel);pdSetStage('testing',p===1?24:p===2?34:45,p===3?'Simulated demo: Testing primary action...':'Simulated demo: Testing elements...')},delay,run));pdLater(()=>runProductDemoStage('issue',run),3200,run)}else if(stage==='issue'){pdSetStage(stage,55,'Simulated demo: Issue detected.');pdVisit('.pd-primary',true);pdLater(()=>runProductDemoStage('ai',run),2600,run)}else if(stage==='ai'){pdSetStage(stage,82,'Simulated demo: AI analyzing issue...');pdLater(()=>pdSetStage('ai',88,'Simulated demo: Recommendation ready.'),1000,run);pdLater(()=>runProductDemoStage('complete',run),2800,run)}else{pdSetStage('complete',100,'Simulated demo: Test completed.');root.querySelector('.pd-cursor').classList.remove('is-visible');pdLater(()=>runProductDemoStage('opening',run),3000,run)}}
-function startProductDemo(){clearProductDemo();const root=document.querySelector('[data-product-demo]');if(!root)return;productDemoRoot=root;productDemoMotion=matchMedia('(prefers-reduced-motion: reduce)');productDemoMotionHandler=e=>{if(e.matches){productDemoTimers.forEach(clearTimeout);productDemoTimers=[];root.dataset.stage='complete';root.dataset.loaded='yes';root.querySelector('.pd-stage-copy').textContent='Simulated demo: Test completed.';root.querySelector('.pd-progress i').style.width='100%';root.querySelector('.pd-progress').setAttribute('aria-valuenow','100');root.querySelector('.pd-percent').textContent='100%';root.querySelectorAll('.pd-row').forEach(x=>x.dataset.state='done');root.querySelector('.pd-cursor').classList.remove('is-visible')}else runProductDemoStage('opening',++productDemoRun)};productDemoMotion.addEventListener?.('change',productDemoMotionHandler);if(productDemoMotion.matches){productDemoMotionHandler({matches:true});return}runProductDemoStage('opening',productDemoRun)}function home(){return `${nav()}<main><section class="hero"><div class="hero-copy"><span class="eyebrow">WEBSITE QA, WITH A LITTLE MORE CLARITY</span><h1>Find bugs<br>before they<br>find <em>your users.</em></h1><p>AI-powered website testing that checks your site, finds issues, and gives clear, actionable fixes.</p><div class="actions">${btn('Get started','/signup')}${btn('Watch demo','#demo','btn outline demo-open')}</div><div class="social"><div class="faces"><b>AP</b><b>JD</b><b>MK</b></div><span>Trusted by 10,000+ developers</span></div></div>${heroWalkthrough()}</section><section class="feature-intro" id="product"><div><span class="eyebrow">MEET YOUR NEW QA SIDEKICK</span><h2>A smarter<br>way to <mark>test.</mark></h2><p>FLIQ runs real browser tests, finds issues, and uses AI to explain them in simple language.</p>${btn('Explore features','/features','btn outline')}</div>${productDemo()}<div class="feature-grid">${[['◉','Automated Testing','Real browser testing with Playwright.'],['♧','Issue Analysis','Clear, evidence-based issue explanations.'],['▧','Actionable Fixes','Step-by-step solutions for every issue.'],['▤','Beautiful Reports','Share, export, and track your progress.']].map(x=>`<article><i>${x[0]}</i><h3>${x[1]}</h3><p>${x[2]}</p></article>`).join('')}</div></section><section class="cta-band"><p>Spend less time finding bugs.<br><strong>More time building great things.</strong></p>${btn('Run your first test','/signup')}</section></main>${footer()}${demoModal()}`}
+function startProductDemo(){clearProductDemo();const root=document.querySelector('[data-product-demo]');if(!root)return;productDemoRoot=root;productDemoMotion=matchMedia('(prefers-reduced-motion: reduce)');productDemoMotionHandler=e=>{if(e.matches){productDemoTimers.forEach(clearTimeout);productDemoTimers=[];root.dataset.stage='complete';root.dataset.loaded='yes';root.querySelector('.pd-stage-copy').textContent='Simulated demo: Test completed.';root.querySelector('.pd-progress i').style.width='100%';root.querySelector('.pd-progress').setAttribute('aria-valuenow','100');root.querySelector('.pd-percent').textContent='100%';root.querySelectorAll('.pd-row').forEach(x=>x.dataset.state='done');root.querySelector('.pd-cursor').classList.remove('is-visible')}else runProductDemoStage('opening',++productDemoRun)};productDemoMotion.addEventListener?.('change',productDemoMotionHandler);if(productDemoMotion.matches){productDemoMotionHandler({matches:true});return}runProductDemoStage('opening',productDemoRun)}function home(){return `${nav()}<main><section class="hero"><div class="hero-copy"><span class="eyebrow">WEBSITE QA, WITH A LITTLE MORE CLARITY</span><h1>Find bugs<br>before they<br>find <em>your users.</em></h1><p>AI-powered website testing that checks your site, finds issues, and gives clear, actionable fixes.</p><div class="actions">${btn('Get started','/signup')}${btn('Watch demo','#demo','btn outline demo-open')}</div><div class="social"><div class="faces"><b>AP</b><b>JD</b><b>MK</b></div><span>Trusted by 10,000+ developers</span></div></div>${heroWalkthrough()}</section><section class="feature-intro" id="product"><div><span class="eyebrow">MEET YOUR NEW QA SIDEKICK</span><h2>A smarter<br>way to <mark>test.</mark></h2><p>FLIQ runs real browser tests, finds issues, and uses AI to explain them in simple language.</p>${btn('Explore features','/features','btn outline')}</div>${productDemo()}<div class="feature-grid">${[['◉','Automated Testing','Real browser testing with Playwright.'],['♧','Issue Analysis','Clear, evidence-based issue explanations.'],['▧','Actionable Fixes','Step-by-step solutions for every issue.'],['▤','Beautiful Reports','Share, export, and track your progress.']].map(x=>`<article><i>${x[0]}</i><h3>${x[1]}</h3><p>${x[2]}</p></article>`).join('')}</div></section></main>${footer()}${demoModal()}`}
 function demoModal(){return modal?`<div class="modal-backdrop" id="demo-modal-backdrop" data-modal-backdrop><section class="demo-modal" role="dialog" aria-modal="true" aria-labelledby="demo-modal-title"><button type="button" class="close" data-modal-close aria-label="Close modal">×</button><span class="eyebrow">A QUICK LOOK</span><h2 id="demo-modal-title">See your site through FLIQ.</h2><p>Enter a public website to start a real browser check.</p><form id="quick-test" novalidate><div class="demo-form-row"><input name="url" id="quick-test-url" type="url" placeholder="https://example.com" autocomplete="url" spellcheck="false" required><button type="submit" class="btn black" id="quick-test-submit">Run a test</button></div><div id="demo-error" role="alert" aria-live="polite"></div></form></section></div>`:''}
 function shareDialog(id){return `<div class="modal-backdrop" data-share-close><section class="demo-modal share-modal" role="dialog" aria-modal="true" aria-labelledby="share-title"><button class="close" data-share-close aria-label="Close sharing dialog">×</button><span class="eyebrow">REPORT ACCESS</span><h2 id="share-title">Share with a signed-in user.</h2>${firebaseConfigured?`<p>Only this report is shared. The recipient needs a FLIQ account and must sign in. You can revoke access at any time.</p><form id="share-form" data-id="${esc(id)}"><label>Account email<input type="email" name="email" autocomplete="off" required placeholder="teammate@example.com"></label><button class="btn black" type="submit">Grant access</button></form><div class="share-recipients"><b>People with access</b>${shareRecipients.length?shareRecipients.map(r=>`<div class="share-person"><span>${esc(r.email)}</span><button class="btn outline" data-revoke="${esc(r.uid)}" data-email="${esc(r.email)}" data-test="${esc(id)}">Revoke</button></div>`).join(''):'<p>Only you can view this report.</p>'}</div>`:`<p>Sharing requires Firebase Authentication and Firestore. Configure Firebase, then share by account email.</p>`}<p class="share-message" aria-live="polite">${esc(shareMessage)}</p></section></div>`}
 function featureIsoScene(){return `<div class="iso-scene" role="img" aria-label="Simulated FLIQ workflow: website input, browser testing, AI analysis, issue detection, and a completed test report. Demonstration values only.">
@@ -689,7 +745,7 @@ function featureIsoScene(){return `<div class="iso-scene" role="img" aria-label=
   <div class="iso-card report-platform-card"><div class="report-mini-head"><span class="step-number">05</span><span class="report-mini-icon">✓</span><div><b>TEST REPORT</b><small class="report-generating">Preparing summary</small><small class="report-complete">REPORT COMPLETE</small></div></div><div class="report-mini-row"><i>✓</i><b>24 checks passed</b></div><div class="report-mini-row report-issue-row"><i>!</i><b>1 issue detected</b></div><div class="report-suggestion"><span>✳</span> AI suggestions available</div><div class="sample-note">SAMPLE DATA · DEMO ONLY</div></div>
   <div class="iso-metric metric-checks"><span class="metric-check-icon">✓</span><span><b>CHECKS PASSED</b><strong>24</strong></span></div><div class="iso-metric metric-issues"><span class="metric-warning">!</span><span><b>ISSUES FOUND</b><strong>1</strong></span></div><div class="iso-metric metric-status"><span class="metric-status-dot"></span><span><b>REPORT STATUS</b><strong>COMPLETE</strong></span></div>
   <div class="iso-stage-label stage-running"><span></span> TEST IN PROGRESS</div><div class="iso-stage-label stage-complete"><span>✓</span> REPORT COMPLETE</div>
-</div>`}function features(){return `${nav()}<main class="features-page"><section class="feature-hero"><div><span class="eyebrow">THOUGHTFUL TESTING, AUTOMATED</span><h1>A smarter<br>way to <mark>test.</mark></h1><p>FLIQ runs real browser tests, finds issues, and uses AI to explain them in simple language.</p>${btn('Get started','/signup')}</div>${featureIsoScene()}</section><section class="feature-grid large">${[['◉','Automated Testing','Real browser testing with Playwright.'],['♧','Issue Analysis','Clear, evidence-based issue explanations.'],['▧','Actionable Fixes','Step-by-step solutions for every issue.'],['▤','Beautiful Reports','Share, export, and track your progress.']].map((x,i)=>`<article id="${['automated-testing','ai-analysis','actionable-fixes','test-reports'][i]}"><i>${x[0]}</i><h3>${x[1]}</h3><p>${x[2]}</p></article>`).join('')}</section><section class="cta-band"><p>Ready to test smarter?</p>${btn('Create your account','/signup')}</section></main>${footer()}`}
+</div>`}function features(){return `${nav()}<main class="features-page"><section class="feature-hero"><div><span class="eyebrow">THOUGHTFUL TESTING, AUTOMATED</span><h1>A smarter<br>way to <mark>test.</mark></h1><p>FLIQ runs real browser tests, finds issues, and uses AI to explain them in simple language.</p>${btn('Get started','/signup')}</div>${featureIsoScene()}</section><section class="feature-grid large">${[['◉','Automated Testing','Real browser testing with Playwright.'],['♧','Issue Analysis','Clear, evidence-based issue explanations.'],['▧','Actionable Fixes','Step-by-step solutions for every issue.'],['▤','Beautiful Reports','Share, export, and track your progress.']].map((x,i)=>`<article id="${['automated-testing','ai-analysis','actionable-fixes','test-reports'][i]}"><i>${x[0]}</i><h3>${x[1]}</h3><p>${x[2]}</p></article>`).join('')}</section></main>${footer()}`}
 const plans = [
   {
     name: 'Free',
@@ -775,7 +831,7 @@ function pricing() {
     const currentBadge = isCurrentPlan ? `<span class="badge" style="background:#111;color:#e3fa39;font-size:9px;font-weight:700;display:inline-block;margin-bottom:8px">CURRENT PLAN</span><br>` : '';
 
     return `<article class="plan ${isSelected ? 'featured' : ''}" data-plan-card="${esc(p.name.toLowerCase())}" role="radio" aria-checked="${isSelected ? 'true' : 'false'}" tabindex="0" aria-label="${esc(p.name)} plan${isSelected ? ', currently selected' : ''}">${isSelected ? '<b class="popular" aria-hidden="true">✓</b>' : ''}${currentBadge}<h3>${esc(p.name)}</h3><p>${esc(p.desc)}</p><div class="price">${displayedPrice}<small> / ${displayedUnit}</small></div>${subtext}<ul>${p.items.map(i => `<li>✓ &nbsp;${esc(i)}</li>`).join('')}</ul>${ctaButton}</article>`;
-  }).join('')}</div><p class="fine-print">Simple pricing. No hidden fees. Upgrade or cancel anytime.</p></main>${footer()}`;
+  }).join('')}</div><p class="fine-print">Simple pricing. No hidden fees. Upgrade or cancel anytime.</p><section class="pricing-support-box" aria-label="Customer Support &amp; Billing Notice"><h4>Questions about plans or billing?</h4><p>Our support team is here to help with plan selection, custom requirements, and account assistance. Email us anytime at <a href="mailto:supportfliq.ai@gmail.com">supportfliq.ai@gmail.com</a>.</p><div class="pricing-policy-links">Review our <a href="/terms-of-service" data-route>Terms of Service</a> and <a href="/refund-policy" data-route>Refund Policy</a>.</div></section></main>${footer()}`;
 }
 let authCarouselTimer = null;
 let authCarouselIndex = 0;
@@ -3180,6 +3236,390 @@ function onboarding(){return `<main class="onboard"><section><div class="onboard
 function docs(){return `${nav()}<main class="text-page"><span class="eyebrow">FLIQ GUIDE</span><h1>Test. Fix. Ship.</h1><p>Welcome to FLIQ, the clear and practical way to understand your website health.</p><h2>Run your first test</h2><ol><li>Create a FLIQ account and sign in.</li><li>Open Dashboard → New Test.</li><li>Enter a public website URL and start the scan.</li><li>Review findings and download the report.</li></ol><h2>What FLIQ checks</h2><p>Page availability, JavaScript errors, same-origin failed requests, internal links, missing images, basic accessible names, and page load timing.</p><p>Testing runs against publicly reachable sites. FLIQ does not submit forms or change third-party websites.</p>${btn('Open dashboard','/dashboard')}</main>${footer()}`}
 function blog(){return `${nav()}<main class="text-page"><span class="eyebrow">FROM THE FLIQ TEAM</span><h1>Notes from the testing floor.</h1><p>Practical ideas for building, shipping, and maintaining better websites.</p><article class="blog-card"><span class="eyebrow">QUALITY · 5 MIN READ</span><h2>Good tests make the next step obvious.</h2><p>A useful QA report does more than list failures. It helps your team decide what to do next, with enough context to verify the finding.</p><a href="/docs" data-route>Read our testing guide →</a></article></main>${footer()}`}
 function demo(){return `${nav()}<main class="text-page"><span class="eyebrow">INTERACTIVE WALKTHROUGH</span><h1>See what your website sees.</h1><p>Try a real scan on a public website. FLIQ will report browser findings as they are collected.</p><form class="new-test-form" id="test-form"><label>Website URL<input name="url" type="url" placeholder="https://example.com" required></label><button class="btn black" type="submit">Run a test →</button><div id="test-error"></div></form></main>${footer()}`}
+function privacyPolicy() {
+  return `${nav()}<main class="legal-page">
+    <div class="legal-back-nav">
+      <a href="/" class="legal-back-link" data-route>← Back to Home</a>
+    </div>
+    <header class="legal-hero">
+      <span class="legal-eyebrow">PRIVACY &amp; DATA PROTECTION</span>
+      <h1 class="legal-title">Privacy <em>Policy</em></h1>
+      <p class="legal-subtitle">How FLIQ collects, uses, protects, and handles your information across our automated website testing and quality assurance platform.</p>
+      <div class="legal-meta-strip">
+        <span class="legal-meta-item"><strong>Effective Date:</strong> January 1, 2026</span>
+        <span class="legal-meta-item"><strong>Last Updated:</strong> February 2026</span>
+        <span class="legal-meta-item"><strong>Customer Support:</strong> <a href="mailto:supportfliq.ai@gmail.com">supportfliq.ai@gmail.com</a></span>
+      </div>
+    </header>
+
+    <div class="legal-callout-card">
+      <span class="legal-callout-badge">SUMMARY</span>
+      <h3>We respect your privacy and protect your scan data.</h3>
+      <p>FLIQ is an automated QA platform designed to inspect public websites. We do not sell your data, we never collect payment card numbers on our servers, and we only collect information necessary to run audits and deliver reports.</p>
+      <p>Have questions about your data or account? Email us directly at <a href="mailto:supportfliq.ai@gmail.com" class="legal-callout-email">supportfliq.ai@gmail.com</a>.</p>
+    </div>
+
+    <section class="legal-section">
+      <h2>1. Information We Collect</h2>
+      <p>We collect information to provide, maintain, and improve our automated testing services:</p>
+      <ul>
+        <li><strong>Account and Registration Information:</strong> When you create an account, sign in via Google OAuth, or register with email, we collect your email address, display name, and unique authentication identifier. Authentication credentials are secure and managed via Google Firebase Authentication; FLIQ never stores raw passwords for OAuth accounts.</li>
+        <li><strong>Submitted Website URLs:</strong> When you run an audit or automated scan, we collect the target website URL and any configuration parameters you specify.</li>
+        <li><strong>Scan Results and Diagnostic Data:</strong> During testing, our headless browser engine collects page screenshots, console logs, network response codes, performance metrics (Core Web Vitals), DOM accessibility nodes, and issue metadata to generate your report.</li>
+        <li><strong>AI Analysis Inputs &amp; Outputs:</strong> Anonymized issue descriptions and code snippets extracted from detected errors may be processed by our AI inference partner to produce human-readable diagnostic summaries and suggested fixes.</li>
+        <li><strong>Subscription &amp; Quota Records:</strong> We track your active subscription plan tier, monthly scan quotas, remaining scans, and renewal dates. All credit card and payment processing is handled exclusively by our merchant-of-record payment partner (Polar). FLIQ servers never receive, process, or store credit card numbers.</li>
+      </ul>
+    </section>
+
+    <section class="legal-section">
+      <h2>2. How We Use Your Information</h2>
+      <p>Your information is used strictly to operate and support FLIQ:</p>
+      <ul>
+        <li>To execute real-browser website scans and audits using Playwright.</li>
+        <li>To generate and display audit reports, category scores, screenshots, and AI-assisted recommendations.</li>
+        <li>To enforce monthly scan limits and manage paid subscription entitlements.</li>
+        <li>To provide customer support and respond to inquiries sent to <a href="mailto:supportfliq.ai@gmail.com">supportfliq.ai@gmail.com</a>.</li>
+        <li>To detect, prevent, and address technical errors, unauthorized access, and abuse of our testing infrastructure.</li>
+      </ul>
+    </section>
+
+    <section class="legal-section">
+      <h2>3. Data Storage, Retention &amp; Security</h2>
+      <p>We implement robust technical and organizational safeguards to protect your personal and diagnostic data:</p>
+      <ul>
+        <li><strong>Encryption:</strong> All data transmitted between your browser, our servers, and third-party APIs is encrypted in transit using industry-standard TLS/HTTPS protocols.</li>
+        <li><strong>Scan History Retention:</strong> Audit reports and captured screenshots are retained based on your account tier:
+          <ul>
+            <li><strong>Free Plan:</strong> Retained for 7 days.</li>
+            <li><strong>Creator Plan:</strong> Retained for 90 days.</li>
+            <li><strong>Team Plan:</strong> Retained for 365 days (1 year).</li>
+          </ul>
+          After the retention period expires, historical scan data is permanently purged.
+        </li>
+        <li><strong>Access Controls:</strong> Test reports are private to your authenticated account by default. Only users explicitly granted access through our report sharing feature can view shared audits.</li>
+      </ul>
+    </section>
+
+    <section class="legal-section">
+      <h2>4. Third-Party Service Providers (Sub-Processors)</h2>
+      <p>We work with trusted third-party providers to deliver our SaaS services:</p>
+      <ul>
+        <li><strong>Google Cloud &amp; Firebase:</strong> Authentication services, real-time database, and secure user profile storage.</li>
+        <li><strong>Polar:</strong> Payment processing, checkout, subscription management, and merchant-of-record billing services.</li>
+        <li><strong>Render:</strong> Cloud compute infrastructure hosting the FLIQ web application and background test runners.</li>
+        <li><strong>Groq:</strong> High-performance AI inference engine used to analyze detected issues and generate explanatory suggestions.</li>
+      </ul>
+      <p>Each service provider operates under strict confidentiality and data protection agreements compliant with applicable privacy frameworks.</p>
+    </section>
+
+    <section class="legal-section">
+      <h2>5. Your Rights and Choices</h2>
+      <p>Depending on your jurisdiction, you have certain rights regarding your personal information:</p>
+      <ul>
+        <li><strong>Access &amp; Export:</strong> You can download test reports in JSON format directly from the test report view in your dashboard.</li>
+        <li><strong>Deletion:</strong> You may request the deletion of your account and associated audit history at any time by contacting us at <a href="mailto:supportfliq.ai@gmail.com">supportfliq.ai@gmail.com</a>.</li>
+        <li><strong>Correction:</strong> You can update your profile display name in your account Settings.</li>
+      </ul>
+    </section>
+
+    <section class="legal-section">
+      <h2>6. Contact Us</h2>
+      <p>If you have any questions, concerns, or requests regarding this Privacy Policy or our data handling practices, please contact our support team:</p>
+      <div class="legal-callout-card" style="margin-top:16px">
+        <span class="legal-callout-badge">SUPPORT CONTACT</span>
+        <h3>FLIQ Privacy &amp; Support Team</h3>
+        <p>Email: <a href="mailto:supportfliq.ai@gmail.com" class="legal-callout-email">supportfliq.ai@gmail.com</a></p>
+        <p>Website: <a href="https://fliqai.site" target="_blank" rel="noopener">https://fliqai.site</a></p>
+      </div>
+    </section>
+  </main>${footer()}`;
+}
+
+function termsOfService() {
+  return `${nav()}<main class="legal-page">
+    <div class="legal-back-nav">
+      <a href="/" class="legal-back-link" data-route>← Back to Home</a>
+    </div>
+    <header class="legal-hero">
+      <span class="legal-eyebrow">TERMS &amp; CONDITIONS</span>
+      <h1 class="legal-title">Terms of <em>Service</em></h1>
+      <p class="legal-subtitle">Please read these Terms of Service carefully before accessing or using the FLIQ website and testing platform.</p>
+      <div class="legal-meta-strip">
+        <span class="legal-meta-item"><strong>Effective Date:</strong> January 1, 2026</span>
+        <span class="legal-meta-item"><strong>Last Updated:</strong> February 2026</span>
+        <span class="legal-meta-item"><strong>Support:</strong> <a href="mailto:supportfliq.ai@gmail.com">supportfliq.ai@gmail.com</a></span>
+      </div>
+    </header>
+
+    <div class="legal-callout-card">
+      <span class="legal-callout-badge">CRITICAL REQUIREMENT</span>
+      <h3>Authorized Testing Only</h3>
+      <p><strong>You must only scan websites that you own or are explicitly authorized to test.</strong> FLIQ is designed exclusively for legitimate website owners, developers, and authorized QA engineers. Unauthorized testing or scanning of third-party property without consent is strictly prohibited.</p>
+      <p>Questions regarding service terms? Contact <a href="mailto:supportfliq.ai@gmail.com" class="legal-callout-email">supportfliq.ai@gmail.com</a>.</p>
+    </div>
+
+    <section class="legal-section">
+      <h2>1. Acceptance of Terms</h2>
+      <p>By creating an account, accessing https://fliqai.site, initiating an automated website scan, or purchasing a subscription, you agree to be bound by these Terms of Service ("Terms") and our Privacy Policy. If you disagree with any part of these Terms, you must discontinue use of the service immediately.</p>
+    </section>
+
+    <section class="legal-section">
+      <h2>2. Description of Service</h2>
+      <p>FLIQ provides an automated software-as-a-service (SaaS) platform for website quality assurance, functionality checks, accessibility audits, performance evaluations, and AI-assisted error diagnosis. Scans are executed using automated headless browsers that interact non-destructively with publicly accessible web pages.</p>
+    </section>
+
+    <section class="legal-section">
+      <h2>3. User Accounts and Security</h2>
+      <p>To access full scanning capabilities and saved reports, you must register an account. You agree to provide accurate, current information and maintain the security of your authentication credentials. You are solely responsible for all activities conducted through your account. Notify us immediately at <a href="mailto:supportfliq.ai@gmail.com">supportfliq.ai@gmail.com</a> if you suspect unauthorized access.</p>
+    </section>
+
+    <section class="legal-section">
+      <h2>4. Acceptable Use and Authorization Rules</h2>
+      <p>As a condition of using FLIQ, you agree to adhere to the following rules:</p>
+      <ul>
+        <li><strong>Ownership and Authorization:</strong> You represent and warrant that you own or possess explicit written authorization from the owner to submit any URL entered into FLIQ for automated inspection.</li>
+        <li><strong>No Internal or Restricted Network Scanning:</strong> You must not attempt to test loopback addresses (e.g., <code>localhost</code>, <code>127.0.0.1</code>), private subnets, intranets, or cloud metadata endpoints (e.g., <code>metadata.google.internal</code>). FLIQ reserves the right to block and terminate requests targeting restricted hosts.</li>
+        <li><strong>No Malicious Loads or DoS:</strong> You must not use FLIQ to flood, stress-test, or perform denial-of-service (DoS) attacks against any web server.</li>
+        <li><strong>No Harmful or Unlawful Content:</strong> You must not submit URLs containing malware, phishing schemes, illegal content, or material that infringes upon third-party intellectual property rights.</li>
+        <li><strong>No Reverse Engineering:</strong> You must not copy, decompile, reverse engineer, or exploit FLIQ's source code, proprietary algorithms, or user interfaces without our prior written consent.</li>
+      </ul>
+      <p>Violation of these rules may result in immediate suspension or permanent termination of your account without refund.</p>
+    </section>
+
+    <section class="legal-section">
+      <h2>5. Advisory Nature of Reports &amp; AI Recommendations</h2>
+      <p><strong>All audit results, scores, issue classifications, and AI-generated explanations are provided on an "AS IS" advisory basis.</strong></p>
+      <ul>
+        <li>FLIQ is an automated tool and does not guarantee that every bug, accessibility failure, or security vulnerability on a tested site will be detected.</li>
+        <li>AI recommendations and code suggestions are advisory. You must independently evaluate and test any code modifications prior to deploying changes to production environments.</li>
+        <li>FLIQ and its operators bear no responsibility or liability for website downtime, customer loss, revenue disruption, or deployment defects arising from reliance on FLIQ reports.</li>
+      </ul>
+    </section>
+
+    <section class="legal-section">
+      <h2>6. Subscriptions, Payments &amp; Billing</h2>
+      <p>FLIQ offers both free and paid subscription plans (such as Creator and Team). Paid plans are billed in advance on a recurring monthly or annual basis via our merchant-of-record partner, <strong>Polar</strong>.</p>
+      <ul>
+        <li>Subscriptions automatically renew at the conclusion of each billing period unless cancelled prior to the renewal date.</li>
+        <li>You may cancel your subscription at any time via your account settings. Cancellation stops future renewals while preserving your access until the end of the current billing cycle.</li>
+        <li>All purchases are governed by our <a href="/refund-policy" data-route>Refund Policy</a>.</li>
+      </ul>
+    </section>
+
+    <section class="legal-section">
+      <h2>7. Intellectual Property</h2>
+      <p>FLIQ, including its branding, logo, visual design, custom artwork, website layout, algorithms, and documentation, is the exclusive intellectual property of FLIQ and its licensors. You retain all ownership rights in your website content and proprietary materials submitted for testing.</p>
+    </section>
+
+    <section class="legal-section">
+      <h2>8. Disclaimer of Warranties and Limitation of Liability</h2>
+      <p>TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, FLIQ IS PROVIDED "AS IS" AND "AS AVAILABLE" WITHOUT WARRANTIES OF ANY KIND, EXPRESS OR IMPLIED. IN NO EVENT SHALL FLIQ, ITS OFFICERS, EMPLOYEES, OR AFFILIATES BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR PUNITIVE DAMAGES, INCLUDING LOSS OF PROFITS, DATA, USE, OR GOODWILL.</p>
+    </section>
+
+    <section class="legal-section">
+      <h2>9. Contact Information</h2>
+      <p>For questions or formal notices regarding these Terms of Service, please contact:</p>
+      <div class="legal-callout-card" style="margin-top:16px">
+        <span class="legal-callout-badge">LEGAL CONTACT</span>
+        <h3>FLIQ Legal Support</h3>
+        <p>Email: <a href="mailto:supportfliq.ai@gmail.com" class="legal-callout-email">supportfliq.ai@gmail.com</a></p>
+        <p>Website: <a href="https://fliqai.site" target="_blank" rel="noopener">https://fliqai.site</a></p>
+      </div>
+    </section>
+  </main>${footer()}`;
+}
+
+function refundPolicy() {
+  return `${nav()}<main class="legal-page">
+    <div class="legal-back-nav">
+      <a href="/" class="legal-back-link" data-route>← Back to Home</a>
+    </div>
+    <header class="legal-hero">
+      <span class="legal-eyebrow">BILLING &amp; CANCELLATION</span>
+      <h1 class="legal-title">Refund <em>Policy</em></h1>
+      <p class="legal-subtitle">Important information regarding subscription billing, cancellations, and our strict all-sales-final policy.</p>
+      <div class="legal-meta-strip">
+        <span class="legal-meta-item"><strong>Effective Date:</strong> January 1, 2026</span>
+        <span class="legal-meta-item"><strong>Last Updated:</strong> February 2026</span>
+        <span class="legal-meta-item"><strong>Billing Support:</strong> <a href="mailto:supportfliq.ai@gmail.com">supportfliq.ai@gmail.com</a></span>
+      </div>
+    </header>
+
+    <div class="legal-callout-card" style="border-left-color:#111">
+      <span class="legal-callout-badge" style="color:#111">POLICY NOTICE</span>
+      <h3>NO REFUNDS — ALL SALES ARE FINAL</h3>
+      <p>FLIQ operates under a strict no-refund policy for all subscription plans, including monthly and annual billing cycles. Once a subscription payment is completed, it is non-refundable and non-creditable.</p>
+      <p>Questions about an invoice? Reach out to <a href="mailto:supportfliq.ai@gmail.com" class="legal-callout-email">supportfliq.ai@gmail.com</a>.</p>
+    </div>
+
+    <section class="legal-section">
+      <h2>1. Strict No-Refund Policy</h2>
+      <p>All purchases made on FLIQ (https://fliqai.site), including recurring monthly and annual subscriptions for the Creator Plan and Team Plan, are strictly final and non-refundable.</p>
+      <p><strong>Why all sales are final:</strong> Upon plan activation, FLIQ immediately provisions dedicated cloud compute capacity, reserves high-performance headless browser resources, provisions encrypted database storage for your audit history, and grants real-time access to our AI diagnostic models. Because these compute and infrastructure resources are consumed dynamically and made available immediately, fees cannot be refunded once processed.</p>
+    </section>
+
+    <section class="legal-section">
+      <h2>2. Unused Scans and Quotas</h2>
+      <p>Each subscription tier includes a specific monthly scan allocation (e.g., 100 scans per month for Creator, 500 scans for Team). Unused scans do not roll over to subsequent months and have no monetary or cash value. No full, partial, or prorated refunds are issued for unused scans or partial billing periods.</p>
+    </section>
+
+    <section class="legal-section">
+      <h2>3. Subscription Cancellation</h2>
+      <p>You can cancel your subscription at any time without fees, penalties, or hidden hurdles:</p>
+      <ul>
+        <li>You can cancel directly from your account Dashboard under <strong>Settings → Billing</strong> or by accessing the customer billing portal.</li>
+        <li>Cancellation takes effect at the end of your current paid billing period.</li>
+        <li>When you cancel, automatic future renewals are permanently stopped. You will retain full access to your plan features, remaining scan quota, and saved test reports until the end of the paid cycle.</li>
+        <li>No further charges will be billed to your payment method after cancellation.</li>
+      </ul>
+    </section>
+
+    <section class="legal-section">
+      <h2>4. Duplicate Charges &amp; Technical Billing Errors</h2>
+      <p>If you believe you have experienced a duplicate charge or an error in billing processing:</p>
+      <ul>
+        <li>Contact our customer support team immediately at <a href="mailto:supportfliq.ai@gmail.com" class="legal-callout-email">supportfliq.ai@gmail.com</a>.</li>
+        <li>Please provide your account email address, date of transaction, and the transaction identifier from Polar.</li>
+        <li>Inquiries must be submitted within <strong>14 calendar days</strong> of the billing date.</li>
+        <li>If an accidental duplicate charge caused by a technical glitch is verified, our team will promptly issue a reversal for the duplicate payment.</li>
+      </ul>
+    </section>
+
+    <section class="legal-section">
+      <h2>5. Statutory Consumer Protection Rights</h2>
+      <p><strong>Mandatory Legal Notice:</strong> Nothing in this Refund Policy is intended to limit, exclude, or modify any statutory rights, mandatory guarantees, or remedies that you may have under applicable consumer protection legislation in your jurisdiction (including mandatory statutory withdrawal periods applicable to consumers in the European Union and the United Kingdom where required by law). Where local law provides for mandatory non-waivable refund rights, this policy shall be interpreted to conform with such statutory requirements.</p>
+    </section>
+
+    <section class="legal-section">
+      <h2>6. Contacting Customer Support</h2>
+      <p>If you have any questions or require assistance with your subscription or account billing, please email our support team:</p>
+      <div class="legal-callout-card" style="margin-top:16px">
+        <span class="legal-callout-badge">BILLING DESK</span>
+        <h3>FLIQ Billing &amp; Customer Support</h3>
+        <p>Email: <a href="mailto:supportfliq.ai@gmail.com" class="legal-callout-email">supportfliq.ai@gmail.com</a></p>
+        <p>Response Time: Typically within 24–48 business hours.</p>
+      </div>
+    </section>
+  </main>${footer()}`;
+}
+
+function contactPage() {
+  return `${nav()}<main class="legal-page">
+    <div class="legal-back-nav">
+      <a href="/" class="legal-back-link" data-route>← Back to Home</a>
+    </div>
+    <header class="legal-hero">
+      <span class="legal-eyebrow">CUSTOMER SUPPORT</span>
+      <h1 class="legal-title">Contact <em>Support</em></h1>
+      <p class="legal-subtitle">Have questions about running website tests, subscription plans, or need technical assistance? Our dedicated support team is here to help.</p>
+      <div class="legal-meta-strip">
+        <span class="legal-meta-item"><strong>Official Email:</strong> <a href="mailto:supportfliq.ai@gmail.com">supportfliq.ai@gmail.com</a></span>
+        <span class="legal-meta-item"><strong>Response Window:</strong> 24–48 Business Hours</span>
+        <span class="legal-meta-item"><strong>Availability:</strong> Monday – Friday</span>
+      </div>
+    </header>
+
+    <div class="contact-cards-grid">
+      <article class="contact-card">
+        <div class="contact-card-icon" aria-hidden="true">🛠️</div>
+        <h3>Technical Support</h3>
+        <p>Need help troubleshooting a test, understanding an error report, or reporting a bug? Send us the details and test URL.</p>
+        <a href="mailto:supportfliq.ai@gmail.com?subject=Technical%20Support%20Request" class="contact-card-link">supportfliq.ai@gmail.com →</a>
+      </article>
+
+      <article class="contact-card">
+        <div class="contact-card-icon" aria-hidden="true">💳</div>
+        <h3>Billing &amp; Plans</h3>
+        <p>Questions about plan upgrades, Polar invoices, billing cycles, or account cancellations? We are here to assist.</p>
+        <a href="mailto:supportfliq.ai@gmail.com?subject=Billing%20Inquiry" class="contact-card-link">supportfliq.ai@gmail.com →</a>
+      </article>
+
+      <article class="contact-card">
+        <div class="contact-card-icon" aria-hidden="true">💡</div>
+        <h3>Product Feedback</h3>
+        <p>Have ideas for new checks, integration requests, or high-volume agency requirements? We'd love to hear from you.</p>
+        <a href="mailto:supportfliq.ai@gmail.com?subject=Product%20Feedback" class="contact-card-link">supportfliq.ai@gmail.com →</a>
+      </article>
+    </div>
+
+    <section class="legal-section">
+      <h2>How We Can Help</h2>
+      <p>FLIQ provides support for all registered users and visitors. When emailing us at <a href="mailto:supportfliq.ai@gmail.com">supportfliq.ai@gmail.com</a>, please include relevant context to help us resolve your issue quickly:</p>
+      <ul>
+        <li>Your FLIQ account email address.</li>
+        <li>The specific website URL you tested or attempted to scan.</li>
+        <li>The Test ID (found in your test report URL: <code>/dashboard/tests/&lt;id&gt;</code>).</li>
+        <li>A brief description of what occurred, including any error messages observed.</li>
+      </ul>
+    </section>
+
+    <section class="legal-section">
+      <h2>Helpful Resources</h2>
+      <p>You can also find immediate answers and policies across these resources:</p>
+      <ul>
+        <li><a href="/docs" data-route>Documentation</a> — Learn how FLIQ tests websites, calculates scores, and detects issues.</li>
+        <li><a href="/pricing" data-route>Pricing Plans</a> — Compare features, limits, and billing options.</li>
+        <li><a href="/terms-of-service" data-route>Terms of Service</a> — Understand our terms of usage and authorized testing requirements.</li>
+        <li><a href="/privacy-policy" data-route>Privacy Policy</a> — Read how we safeguard your personal and diagnostic data.</li>
+        <li><a href="/refund-policy" data-route>Refund Policy</a> — Review our billing policies, cancellation terms, and guidelines.</li>
+      </ul>
+    </section>
+  </main>${footer()}`;
+}
+
+function aboutPage() {
+  return `${nav()}<main class="legal-page">
+    <div class="legal-back-nav">
+      <a href="/" class="legal-back-link" data-route>← Back to Home</a>
+    </div>
+    <header class="legal-hero">
+      <span class="legal-eyebrow">OUR STORY &amp; MISSION</span>
+      <h1 class="legal-title">About <em>FLIQ</em></h1>
+      <p class="legal-subtitle">Building friction-free automated website QA and performance diagnostics for modern developers, creators, and teams.</p>
+      <div class="legal-meta-strip">
+        <span class="legal-meta-item"><strong>Platform:</strong> FLIQ Website QA</span>
+        <span class="legal-meta-item"><strong>Headquarters:</strong> Global / Remote</span>
+        <span class="legal-meta-item"><strong>Contact:</strong> <a href="mailto:supportfliq.ai@gmail.com">supportfliq.ai@gmail.com</a></span>
+      </div>
+    </header>
+
+    <div class="legal-callout-card">
+      <span class="legal-callout-badge">OUR MISSION</span>
+      <h3>Better websites start here.</h3>
+      <p>Modern web development moves at lightspeed, but testing often lags behind—bogged down by complex frameworks, fragile configurations, or expensive enterprise tooling. FLIQ was created to solve this: instant, automated, real-browser testing that requires zero setup.</p>
+    </div>
+
+    <section class="legal-section">
+      <h2>Why We Built FLIQ</h2>
+      <p>Every developer knows the sinking feeling of discovering a broken button, missing image, or failing script after pushing code to production. Manual QA across multiple viewports is time-consuming, and setting up headless browser test suites often takes days.</p>
+      <p>FLIQ provides a lightweight, automated alternative: enter your public website URL, and our cloud browser engine performs deep checks across five critical dimensions:</p>
+      <ul>
+        <li><strong>Functionality:</strong> Verifies page loads, HTTP response statuses, console errors, uncaught exceptions, and interactive elements.</li>
+        <li><strong>Accessibility:</strong> Audits DOM elements against WCAG 2.2 Level A/AA standards, checking color contrast, form labels, and image alt text.</li>
+        <li><strong>Performance:</strong> Measures Core Web Vitals including First Contentful Paint, Largest Contentful Paint, and page load durations.</li>
+        <li><strong>SEO Health:</strong> Inspects title tags, meta descriptions, OpenGraph attributes, canonical headers, and crawlability.</li>
+        <li><strong>Security &amp; Transport:</strong> Confirms secure HTTPS transport, mixed-content checks, and fundamental security headers.</li>
+      </ul>
+    </section>
+
+    <section class="legal-section">
+      <h2>The Non-Destructive Testing Philosophy</h2>
+      <p>FLIQ is built on the principle of non-destructive inspection. We test websites the way real users experience them—rendering HTML, executing JavaScript, and inspecting live elements without submitting dangerous forms, modifying database records, or spamming endpoints.</p>
+      <p>Paired with evidence-based AI issue analysis, FLIQ doesn't just alert you that an error exists; it gives you the exact line, screenshot, and recommended step-by-step fix.</p>
+    </section>
+
+    <section class="legal-section">
+      <h2>Get in Touch</h2>
+      <p>Whether you're an individual creator, a fast-growing startup, or a digital agency, we'd love to hear how FLIQ is helping you build better websites.</p>
+      <div class="legal-callout-card" style="margin-top:16px">
+        <span class="legal-callout-badge">CONNECT WITH US</span>
+        <h3>Questions, Feedback, or Inquiries</h3>
+        <p>Reach out to our customer team anytime at <a href="mailto:supportfliq.ai@gmail.com" class="legal-callout-email">supportfliq.ai@gmail.com</a>.</p>
+        <p>Explore our plans at <a href="/pricing" data-route>FLIQ Pricing</a> or learn more in our <a href="/docs" data-route>Documentation</a>.</p>
+      </div>
+    </section>
+  </main>${footer()}`;
+}
 function checkoutPage(){
   const params=new URLSearchParams(location.search);
   const planParam=(params.get('plan')||sessionStorage.getItem('fliqPendingPlan')||sessionStorage.getItem('fliqSelectedPlan')||'creator').toLowerCase();
@@ -3483,7 +3923,12 @@ function render(){
     else if(path==='/docs') out=docs();
     else if(path==='/blog') out=blog();
     else if(path==='/demo') out=demo();
-    else out=`${nav()}<main class="text-page"><h1>Page not found</h1>${btn('Go home','/')}</main>`;
+    else if(path==='/privacy-policy') out=privacyPolicy();
+    else if(path==='/terms-of-service') out=termsOfService();
+    else if(path==='/refund-policy') out=refundPolicy();
+    else if(path==='/about') out=aboutPage();
+    else if(path==='/contact'||path==='/support') out=contactPage();
+    else out=`${nav()}<main class="text-page"><h1>Page not found</h1>${btn('Go home','/')}</main>${footer()}`;
 
     if(out instanceof Promise){
       // Ensure the screen is never left empty while async pages load
