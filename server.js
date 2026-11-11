@@ -1932,9 +1932,14 @@ export async function runAllSuitesSequentially() {
 
 export function startServer(port = PORT, host = HOST) {
   return new Promise((resolve, reject) => {
+    if (server.listening) {
+      return resolve(server);
+    }
     server.listen(port, host, (err) => {
       if (err) return reject(err);
-      console.log(`FLIQ ready on http://${host === '0.0.0.0' ? '127.0.0.1' : host}:${port}`);
+      const addr = server.address();
+      const actualPort = (typeof addr === 'object' && addr?.port) ? addr.port : port;
+      console.log(`FLIQ ready on http://${host === '0.0.0.0' ? '127.0.0.1' : host}:${actualPort}`);
       resolve(server);
     });
   });
@@ -1942,6 +1947,9 @@ export function startServer(port = PORT, host = HOST) {
 
 export function closeServer() {
   return new Promise((resolve) => {
+    if (!server.listening) {
+      return resolve();
+    }
     server.close(() => resolve());
   });
 }

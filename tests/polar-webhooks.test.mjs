@@ -25,6 +25,13 @@ import {
   getPolarAccessToken,
   buildPolarAuthHeader
 } from '../lib/polar-webhook.js';
+import {
+  getUserEntitlement,
+  resolveEffectivePlan,
+  formatUserEntitlement,
+  PLAN_CONFIGS
+} from '../lib/entitlements.js';
+import { server } from '../server.js';
 
 // In-memory mock Firestore for offline test assertions
 function createMockFirestore() {
@@ -1206,15 +1213,300 @@ describe('FLIQ Polar Payment Webhooks Test Suite', () => {
       const serverPath = path.join(rootDir, 'server.js');
       const serverContent = await fs.readFile(serverPath, 'utf8');
 
-      // Health endpoint must report environment and host
+      // 1. Health endpoint source must report environment and host telemetry safely
       assert.match(serverContent, /polarServer:\s*getPolarServerEnvironment\(\)/);
       assert.match(serverContent, /polarEnvironment:\s*getPolarServerEnvironment\(\)/);
       assert.match(serverContent, /polarApiHost:\s*getPolarApiHost\(\)/);
+      assert.match(serverContent, /polarWebhookConfigured:\s*Boolean\(process\.env\.POLAR_WEBHOOK_SECRET\)/);
+      assert.match(serverContent, /polarConfigured:\s*Boolean\(getPolarAccessToken\(\)\)/);
 
-      // Must never leak access token or secrets
-      const healthSection = serverContent.slice(serverContent.indexOf("pathname==='/api/health'"), serverContent.indexOf("isTestRoute ="));
-      assert.doesNotMatch(healthSection, /process\.env\.POLAR_ACCESS_TOKEN\b(?!.*\bBoolean\b)/, 'Health route must not expose raw POLAR_ACCESS_TOKEN');
-      assert.doesNotMatch(healthSection, /process\.env\.POLAR_WEBHOOK_SECRET\b(?!.*\bBoolean\b)/, 'Health route must not expose raw POLAR_WEBHOOK_SECRET');
+      // 2. Set unique sentinel test credentials in environment
+      const SENTINEL_WEBHOOK_SECRET = 'whsec_SENTINEL_SECRET_TEST_CREDENTIAL_987654321';
+      const SENTINEL_ACCESS_TOKEN = 'polar_oat_SENTINEL_TOKEN_TEST_CREDENTIAL_123456789';
+      const prevSecret = process.env.POLAR_WEBHOOK_SECRET;
+      const prevToken = process.env.POLAR_ACCESS_TOKEN;
+      const prevServer = process.env.POLAR_SERVER;
+
+      process.env.POLAR_WEBHOOK_SECRET = SENTINEL_WEBHOOK_SECRET;
+      process.env.POLAR_ACCESS_TOKEN = SENTINEL_ACCESS_TOKEN;
+      process.env.POLAR_SERVER = 'sandbox';
+
+      try {
+        // 3. Dispatch actual /api/health request to the server request handler
+        const healthData = await new Promise((resolve, reject) => {
+          const mockReq = createMockRequest('GET', '', { host: '127.0.0.1' });
+          mockReq.url = '/api/health';
+          mockReq.socket = { remoteAddress: '127.0.0.1' };
+          const mockRes = createMockResponse();
+          const origEnd = mockRes.end.bind(mockRes);
+          mockRes.end = (chunk) => {
+            origEnd(chunk);
+            try {
+              resolve(mockRes.json());
+            } catch (err) {
+              reject(err);
+            }
+          };
+          server.emit('request', mockReq, mockRes);
+        });
+
+        // 4. Verify telemetry fields are present and safe
+        assert.equal(healthData.ok, true);
+        assert.equal(healthData.polarWebhookConfigured, true, 'polarWebhookConfigured must be true when secret is set');
+        assert.equal(healthData.polarConfigured, true, 'polarConfigured must be true when access token is set');
+        assert.equal(typeof healthData.polarServer, 'string');
+        assert.equal(typeof healthData.polarEnvironment, 'string');
+        assert.equal(typeof healthData.polarApiHost, 'string');
+        assert.equal(healthData.polarServer, 'sandbox');
+        assert.equal(healthData.polarEnvironment, 'sandbox');
+        assert.equal(healthData.polarApiHost, 'https://sandbox-api.polar.sh');
+
+        // 5. Verify actual serialized response NEVER leaks raw webhook secret or access token
+        const serialized = JSON.stringify(healthData);
+        assert.equal(serialized.includes(SENTINEL_WEBHOOK_SECRET), false, 'Actual health response data must never leak raw POLAR_WEBHOOK_SECRET');
+        assert.equal(serialized.includes(SENTINEL_ACCESS_TOKEN), false, 'Actual health response data must never leak raw POLAR_ACCESS_TOKEN');
+      } finally {
+        if (prevSecret !== undefined) process.env.POLAR_WEBHOOK_SECRET = prevSecret;
+        else delete process.env.POLAR_WEBHOOK_SECRET;
+        if (prevToken !== undefined) process.env.POLAR_ACCESS_TOKEN = prevToken;
+        else delete process.env.POLAR_ACCESS_TOKEN;
+        if (prevServer !== undefined) process.env.POLAR_SERVER = prevServer;
+        else delete process.env.POLAR_SERVER;
+      }
+    });
+  });
+
+  describe('7. Webhook-to-Firestore-to-Frontend Subscription Activation Flow', () => {
+    let mockDb;
+
+    beforeEach(() => {
+      mockDb = createMockFirestore();
+      process.env.POLAR_SERVER = 'sandbox';
+      process.env.POLAR_PRODUCT_CREATOR_MONTHLY = 'prod_sb_creator_mo';
+      process.env.POLAR_PRODUCT_CREATOR_YEARLY = 'prod_sb_creator_yr';
+      process.env.POLAR_PRODUCT_TEAM_MONTHLY = 'prod_sb_team_mo';
+      process.env.POLAR_PRODUCT_TEAM_YEARLY = 'prod_sb_team_yr';
+    });
+
+    test('subscription.active with checkout session link activates Creator Monthly in Firestore', async () => {
+      // 1. Seed checkout doc created during checkout session initiation
+      await mockDb.collection('checkouts').doc('chk_polar_sess_999').set({
+        id: 'chk_polar_sess_999',
+        userId: 'firebase_creator_uid_42',
+        plan: 'creator',
+        interval: 'monthly'
+      });
+
+      // 2. Incoming Polar subscription.active webhook event referencing checkout_id
+      const event = {
+        type: 'subscription.active',
+        data: {
+          id: 'sub_polar_act_42',
+          checkout_id: 'chk_polar_sess_999',
+          product_id: 'prod_sb_creator_mo',
+          status: 'active',
+          current_period_start: new Date().toISOString(),
+          current_period_end: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+          customer_id: 'cust_polar_42',
+          metadata: {}
+        }
+      };
+
+      const outcome = await processPolarWebhookEvent(event, { db: mockDb });
+      assert.equal(outcome.success, true);
+      assert.equal(outcome.plan, 'creator');
+      assert.equal(outcome.userId, 'firebase_creator_uid_42');
+
+      // 3. Verify user document updated in Firestore
+      const userDoc = mockDb._get('users', 'firebase_creator_uid_42');
+      assert.ok(userDoc, 'User document must be created/updated in Firestore');
+      assert.equal(userDoc.plan, 'creator');
+      assert.equal(userDoc.subscriptionStatus, 'active');
+      assert.equal(userDoc.billingInterval, 'monthly');
+      assert.equal(userDoc.polarSubscriptionId, 'sub_polar_act_42');
+      assert.equal(userDoc.polarCustomerId, 'cust_polar_42');
+    });
+
+    test('getUserEntitlement returns Creator plan (100 scans, AI, PDF) for the activated user', async () => {
+      const futurePeriodEnd = new Date(Date.now() + 25 * 24 * 60 * 60 * 1000).toISOString();
+      await mockDb.collection('users').doc('firebase_creator_uid_42').set({
+        plan: 'creator',
+        planName: 'Creator',
+        subscriptionStatus: 'active',
+        billingInterval: 'monthly',
+        currentPeriodEnd: futurePeriodEnd,
+        monthlyScanUsage: 0
+      });
+
+      const entitlement = await getUserEntitlement('firebase_creator_uid_42', { db: mockDb });
+      assert.equal(entitlement.plan, 'creator');
+      assert.equal(entitlement.planName, 'Creator');
+      assert.equal(entitlement.isPaid, true);
+      assert.equal(entitlement.subscriptionStatus, 'active');
+      assert.equal(entitlement.monthlyScansLimit, 100);
+      assert.equal(entitlement.scansRemaining, 100);
+      assert.equal(entitlement.allowAiExplanations, true);
+      assert.equal(entitlement.allowPdfExport, true);
+      assert.equal(entitlement.historyRetentionDays, 90);
+    });
+
+    test('Extracts verified user ID from customer_metadata, external_customer_id, and checkout_session_link', async () => {
+      // Case A: data.customer_metadata
+      const eventA = {
+        type: 'subscription.active',
+        data: {
+          id: 'sub_a',
+          customer_metadata: { userId: 'firebase_user_from_cust_meta' }
+        }
+      };
+      const resA = await extractUserIdFromPolarEvent(eventA, mockDb);
+      assert.equal(resA.userId, 'firebase_user_from_cust_meta');
+
+      // Case B: data.external_customer_id
+      const eventB = {
+        type: 'subscription.active',
+        data: {
+          id: 'sub_b',
+          external_customer_id: 'firebase_user_from_ext_cust'
+        }
+      };
+      const resB = await extractUserIdFromPolarEvent(eventB, mockDb);
+      assert.equal(resB.userId, 'firebase_user_from_ext_cust');
+
+      // Case C: data.checkout_id Firestore lookup
+      await mockDb.collection('checkouts').doc('chk_linked_777').set({
+        id: 'chk_linked_777',
+        userId: 'firebase_user_from_checkout_store'
+      });
+      const eventC = {
+        type: 'subscription.active',
+        data: {
+          id: 'sub_c',
+          checkout_id: 'chk_linked_777'
+        }
+      };
+      const resC = await extractUserIdFromPolarEvent(eventC, mockDb);
+      assert.equal(resC.userId, 'firebase_user_from_checkout_store');
+      assert.equal(resC.source, 'checkout_session_link');
+    });
+
+    test('Strictly avoids confusing Polar internal user_id with Firebase user UID', async () => {
+      const eventWithPolarUserIdOnly = {
+        type: 'subscription.active',
+        data: {
+          id: 'sub_polar_user_only',
+          user_id: 'polar_internal_uuid_should_not_become_firebase_uid',
+          customer: { external_id: null },
+          metadata: {}
+        }
+      };
+
+      const res = await extractUserIdFromPolarEvent(eventWithPolarUserIdOnly, mockDb);
+      assert.equal(res.userId, null, 'Polar internal user_id must never be treated as Firebase UID');
+    });
+
+    test('createPolarCheckoutSession persists checkout doc in Firestore when cloudDb is provided', async () => {
+      const mockFetch = async (url, opts) => {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({
+            id: 'chk_polar_sess_persisted',
+            url: 'https://sandbox.polar.sh/checkout/chk_polar_sess_persisted'
+          })
+        };
+      };
+
+      const session = await createPolarCheckoutSession({
+        plan: 'creator',
+        interval: 'monthly',
+        user: { uid: 'firebase_test_user_persisted', email: 'persisted@sandbox.local' },
+        fetchFn: mockFetch,
+        cloudDb: mockDb
+      });
+
+      assert.equal(session.checkoutId, 'chk_polar_sess_persisted');
+      const savedDoc = mockDb._get('checkouts', 'chk_polar_sess_persisted');
+      assert.ok(savedDoc, 'Checkout session document must be stored in Firestore');
+      assert.equal(savedDoc.userId, 'firebase_test_user_persisted');
+      assert.equal(savedDoc.plan, 'creator');
+      assert.equal(savedDoc.interval, 'monthly');
+    });
+
+    test('order.paid followed by subscription.active maintains Creator plan idempotently', async () => {
+      const futurePeriodEnd = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+
+      // Step 1: order.paid arrives
+      const orderPaidEvent = {
+        type: 'order.paid',
+        data: {
+          id: 'ord_order_paid_first',
+          status: 'paid',
+          product_id: 'prod_sb_creator_mo',
+          amount: 900,
+          customer_id: 'cust_seq_1',
+          metadata: { userId: 'firebase_seq_user_1' }
+        }
+      };
+      const outcome1 = await processPolarWebhookEvent(orderPaidEvent, { db: mockDb });
+      assert.equal(outcome1.success, true);
+      assert.equal(outcome1.plan, 'creator');
+
+      // Step 2: subscription.updated arrives with active status
+      const subUpdatedEvent = {
+        type: 'subscription.updated',
+        data: {
+          id: 'sub_seq_1',
+          status: 'active',
+          product_id: 'prod_sb_creator_mo',
+          customer_id: 'cust_seq_1',
+          current_period_end: futurePeriodEnd,
+          metadata: { userId: 'firebase_seq_user_1' }
+        }
+      };
+      const outcome2 = await processPolarWebhookEvent(subUpdatedEvent, { db: mockDb });
+      assert.equal(outcome2.success, true);
+
+      // Step 3: subscription.active arrives
+      const subActiveEvent = {
+        type: 'subscription.active',
+        data: {
+          id: 'sub_seq_1',
+          status: 'active',
+          product_id: 'prod_sb_creator_mo',
+          customer_id: 'cust_seq_1',
+          current_period_end: futurePeriodEnd,
+          metadata: { userId: 'firebase_seq_user_1' }
+        }
+      };
+      const outcome3 = await processPolarWebhookEvent(subActiveEvent, { db: mockDb });
+      assert.equal(outcome3.success, true);
+      assert.equal(outcome3.plan, 'creator');
+
+      // Step 4: Final entitlement check
+      const entitlement = await getUserEntitlement('firebase_seq_user_1', { db: mockDb });
+      assert.equal(entitlement.plan, 'creator');
+      assert.equal(entitlement.isPaid, true);
+      assert.equal(entitlement.subscriptionStatus, 'active');
+      assert.equal(entitlement.monthlyScansLimit, 100);
+    });
+
+    test('Frontend app.js exposes fetchUserEntitlement and settings() renders dynamic billing data', async () => {
+      const rootDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+      const appJs = await fs.readFile(path.join(rootDir, 'app.js'), 'utf8');
+
+      // Verify entitlement loader
+      assert.match(appJs, /async function fetchUserEntitlement\(/);
+      assert.match(appJs, /window\.fetchUserEntitlement\s*=/);
+      assert.match(appJs, /apiFetch\('\/api\/subscription'\)/);
+
+      // Verify dynamic billing rendering in settings
+      assert.match(appJs, /tab==='Billing'/);
+      assert.match(appJs, /window\.__fliqEntitlement/);
+      assert.match(appJs, /ent\.monthlyScanUsage/);
+      assert.match(appJs, /ent\.monthlyScansLimit/);
+      assert.match(appJs, /ent\.scansRemaining/);
+      assert.match(appJs, /ent\.historyRetentionDays/);
     });
   });
 

@@ -12,7 +12,9 @@ import {
   getUserEntitlement,
   checkAndIncrementScanUsage,
   filterTestsByRetention,
-  generateReportPdfBuffer
+  generateReportPdfBuffer,
+  withLocalLock,
+  localLockQueue
 } from '../lib/entitlements.js';
 
 import {
@@ -28,6 +30,7 @@ const testDataDir = path.join(rootDir, 'data');
 // Mock in-memory Firestore with transaction support
 function createMockDb() {
   const collections = new Map();
+  let transactionQueue = Promise.resolve();
 
   const getCol = (name) => {
     if (!collections.has(name)) collections.set(name, new Map());
@@ -59,15 +62,32 @@ function createMockDb() {
       };
     },
     async runTransaction(updateFn) {
-      const transaction = {
-        async get(docRef) {
-          return await docRef.get();
-        },
-        set(docRef, data, opts) {
-          docRef.set(data, opts);
+      const prevTx = transactionQueue;
+      let releaseTx;
+      transactionQueue = new Promise(resolve => { releaseTx = resolve; });
+      await prevTx;
+
+      try {
+        const stagedWrites = [];
+        const transaction = {
+          async get(docRef) {
+            return await docRef.get();
+          },
+          set(docRef, data, opts) {
+            stagedWrites.push(() => docRef.set(data, opts));
+          }
+        };
+
+        const result = await updateFn(transaction);
+
+        for (const write of stagedWrites) {
+          await write();
         }
-      };
-      return await updateFn(transaction);
+
+        return result;
+      } finally {
+        releaseTx();
+      }
     },
     batch() {
       const ops = [];
@@ -82,6 +102,7 @@ function createMockDb() {
     },
     _clear() {
       collections.clear();
+      transactionQueue = Promise.resolve();
     }
   };
 }
@@ -513,5 +534,46 @@ describe('FLIQ Subscription Entitlements & Usage Enforcement Suite', () => {
     assert.ok(Buffer.isBuffer(buf), 'Must return a Buffer');
     assert.ok(buf.toString('utf8', 0, 8).startsWith('%PDF-1.4'), 'Must start with PDF 1.4 header');
     assert.ok(buf.toString('utf8').includes('%%EOF'), 'Must end with EOF marker');
+  });
+
+  // =========================================================================
+  // REQUIREMENT 15: Local concurrency lock cleans up correctly and handles errors
+  // =========================================================================
+  test('15. withLocalLock serializes concurrent tasks and cleans up map entry after completion', async () => {
+    const lockUser = 'test-lock-user-cleanup';
+    const executionOrder = [];
+
+    const task1 = withLocalLock(lockUser, async () => {
+      await new Promise(r => setTimeout(r, 20));
+      executionOrder.push('task1');
+      return 'val1';
+    });
+
+    const task2 = withLocalLock(lockUser, async () => {
+      await new Promise(r => setTimeout(r, 10));
+      executionOrder.push('task2');
+      return 'val2';
+    });
+
+    const [res1, res2] = await Promise.all([task1, task2]);
+    assert.equal(res1, 'val1');
+    assert.equal(res2, 'val2');
+    assert.deepEqual(executionOrder, ['task1', 'task2'], 'Tasks must be serialized');
+    assert.equal(localLockQueue.has(lockUser), false, 'Lock queue entry must be deleted after tasks finish');
+  });
+
+  test('16. withLocalLock cleans up map entry even when an operation throws', async () => {
+    const failingUser = 'failing-lock-user';
+
+    await assert.rejects(
+      async () => {
+        await withLocalLock(failingUser, async () => {
+          throw new Error('Lock operation explosion');
+        });
+      },
+      /Lock operation explosion/
+    );
+
+    assert.equal(localLockQueue.has(failingUser), false, 'Lock queue entry must be removed even when operation throws');
   });
 });

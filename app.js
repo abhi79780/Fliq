@@ -1,6 +1,6 @@
 const $=s=>document.querySelector(s), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let path=location.pathname, modal=false, period='Monthly', activeTab='Issues', issueFilter='all', testTimer, shareModalId=null, shareRecipients=[], shareMessage='';
-let upgradeModalData = null, entitlementFetchPromise = null;
+let upgradeModalData = null;
 let selectedPricingPlan = 'Creator';
 let logoutConfirmOpen = false, isLoggingOut = false, logoutError = '';
 let productMenuCloseTimer=0;
@@ -101,6 +101,7 @@ async function initializeFirebaseClient() {
       if (u) {
         localStorage.setItem('fliqEmail', u.email || '');
         localStorage.setItem('fliqName', u.displayName || '');
+        fetchUserEntitlement().catch(() => {});
       }
       notifyAuthSubscribers(u);
     }, err => {
@@ -393,6 +394,59 @@ async function apiFetch(url,options={}){
     delete headers.authorization;
   }
   return fetch(resolvedUrl, { ...options, headers });
+}
+
+let entitlementFetchPromise = null;
+let entitlementLastFetched = 0;
+
+async function fetchUserEntitlement(force = false) {
+  const now = Date.now();
+  if (!force && window.__fliqEntitlement && (now - entitlementLastFetched < 60000)) {
+    return window.__fliqEntitlement;
+  }
+  if (entitlementFetchPromise && !force) {
+    return entitlementFetchPromise;
+  }
+
+  entitlementFetchPromise = (async () => {
+    try {
+      const user = await getResolvedAuthState(2000);
+      if (!user) {
+        window.__fliqEntitlement = null;
+        return null;
+      }
+      const r = await apiFetch('/api/subscription');
+      if (!r.ok) {
+        if (!window.__fliqEntitlement) {
+          window.__fliqEntitlement = { plan: 'free', planName: 'Free', isPaid: false, monthlyScansLimit: 3, monthlyScanUsage: 0, scansRemaining: 3, historyRetentionDays: 7 };
+        }
+        return window.__fliqEntitlement;
+      }
+      const data = await r.json();
+      window.__fliqEntitlement = data;
+      entitlementLastFetched = Date.now();
+      updateSidebarEntitlement();
+      return data;
+    } catch (e) {
+      console.warn('[FLIQ] Failed to fetch subscription entitlement:', e.message);
+      if (!window.__fliqEntitlement) {
+        window.__fliqEntitlement = { plan: 'free', planName: 'Free', isPaid: false, monthlyScansLimit: 3, monthlyScanUsage: 0, scansRemaining: 3, historyRetentionDays: 7 };
+      }
+      return window.__fliqEntitlement;
+    } finally {
+      entitlementFetchPromise = null;
+    }
+  })();
+
+  return entitlementFetchPromise;
+}
+window.fetchUserEntitlement = fetchUserEntitlement;
+
+function updateSidebarEntitlement() {
+  const small = document.querySelector('.side-bottom small');
+  if (small && window.__fliqEntitlement) {
+    small.textContent = `${window.__fliqEntitlement.planName || 'Free'} plan`;
+  }
 }
 const logo='<a href="/" class="logo-link" data-route aria-label="FLIQ Home"><img class="logo" src="/public/fliq-logo.png" onerror="this.onerror=null;this.src=\'/fliq-logo.png\'" alt="FLIQ"></a>';
 const go=p=>{
@@ -1577,10 +1631,12 @@ function renderCheckoutStatusBanner() {
   const params = new URLSearchParams(location.search);
   const checkoutStatus = params.get('checkout');
   if (checkoutStatus === 'success') {
+    const isPaid = Boolean(window.__fliqEntitlement?.isPaid);
+    const planName = window.__fliqEntitlement?.planName || 'Creator';
     return `
       <div class="setup-note" style="border-left-color:#22c55e;background:#f0fdf4;padding:16px 20px;border-radius:8px;margin-bottom:24px" role="status" aria-live="polite">
-        <strong style="color:#15803d;font-size:14px;display:block;margin-bottom:4px">✓ Payment Completed</strong>
-        <p style="margin:0;color:#166534;font-size:13px">Your checkout was successful! We are syncing your subscription with Polar. Your upgraded features will activate as soon as the payment confirmation is finalized.</p>
+        <strong style="color:#15803d;font-size:14px;display:block;margin-bottom:4px">✓ Payment Completed${isPaid ? ` · ${esc(planName)} Plan Active!` : ''}</strong>
+        <p style="margin:0;color:#166534;font-size:13px">${isPaid ? `Your ${esc(planName)} subscription is now active! You have ${window.__fliqEntitlement.scansRemaining} of ${window.__fliqEntitlement.monthlyScansLimit} scans remaining.` : 'Your checkout was successful! We are syncing your subscription with Polar. Your upgraded features will activate as soon as the payment confirmation is finalized.'}</p>
       </div>
     `;
   }
@@ -1616,6 +1672,22 @@ function dashboard(){
 
   // Trigger background refresh (synchronous 0ms shell rendering)
   setTimeout(() => refreshDashboardData(), 10);
+  setTimeout(() => {
+    fetchUserEntitlement().then(ent => {
+      const p = new URLSearchParams(location.search);
+      if (p.get('checkout') === 'success' && !ent?.isPaid) {
+        let count = 0;
+        const syncInterval = setInterval(async () => {
+          count++;
+          const updated = await fetchUserEntitlement(true);
+          if (updated?.isPaid || count >= 5) {
+            clearInterval(syncInterval);
+            if (location.pathname === '/dashboard') render();
+          }
+        }, 2000);
+      }
+    });
+  }, 20);
 
   const active = getActiveScanState();
   let displayList = [...list];
@@ -2834,7 +2906,75 @@ function settings(){
   if(tab==='Preferences'){
     content=`<h3>Preferences</h3><label><input id="email-notifications" type="checkbox" ${prefs.emailNotifications===false?'':'checked'}> Email notifications</label><label>Default viewport<select id="default-viewport"><option ${prefs.defaultViewport==='Mobile'?'':'selected'}>Desktop</option><option ${prefs.defaultViewport==='Mobile'?'selected':''}>Mobile</option></select></label><button class="btn black" data-action="save-prefs">Save changes</button>`;
   } else if(tab==='Billing'){
-    content=`<h3>Free plan</h3><p>Subscription billing is not connected. Plan limits are not enforced in this local setup.</p>${btn('Compare plans','/pricing','btn outline')}`;
+    const ent = window.__fliqEntitlement || {
+      plan: 'free',
+      planName: 'Free',
+      subscriptionStatus: 'active',
+      isPaid: false,
+      billingInterval: 'monthly',
+      monthlyScansLimit: 3,
+      monthlyScanUsage: 0,
+      scansRemaining: 3,
+      historyRetentionDays: 7
+    };
+    const isPaid = Boolean(ent.isPaid);
+    const isYearly = ent.billingInterval === 'yearly';
+    const priceDisplay = ent.plan === 'creator'
+      ? (isYearly ? '$84 / year' : '$9 / month')
+      : ent.plan === 'team'
+      ? (isYearly ? '$188 / year' : '$19.99 / month')
+      : '$0 / forever';
+    const statusPill = isPaid
+      ? `<span class="badge" style="background:#dcfce7;color:#166534;font-size:11px;font-weight:700;padding:3px 10px;border-radius:12px">● Active</span>`
+      : `<span class="badge" style="background:#f1f5f9;color:#475569;font-size:11px;font-weight:700;padding:3px 10px;border-radius:12px">Free</span>`;
+
+    const renewalInfo = ent.currentPeriodEnd
+      ? `<div style="margin-top:14px;padding:12px 14px;background:#f8f6f2;border-radius:8px;font-size:12px;color:#5a544b"><strong style="color:#201d1a">Subscription Renewal:</strong> ${ent.cancelAtPeriodEnd ? 'Cancels at end of billing period on' : 'Renews on'} ${new Date(ent.currentPeriodEnd).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })}</div>`
+      : '';
+
+    content = `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px">
+        <div>
+          <h3 style="margin:0 0 4px;font-size:18px">${esc(ent.planName)} Plan</h3>
+          <p style="margin:0;color:#716c65;font-size:13px">${isPaid ? 'Active Polar Subscription' : 'Basic website testing'}</p>
+        </div>
+        <div>${statusPill}</div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:18px;padding:16px;background:#faf8f5;border:1px solid #e7e2da;border-radius:10px">
+        <div>
+          <span style="font-size:11px;font-weight:700;text-transform:uppercase;color:#9b948a;letter-spacing:0.04em">Price</span>
+          <div style="font-size:16px;font-weight:700;color:#201d1a;margin-top:2px">${esc(priceDisplay)}</div>
+        </div>
+        <div>
+          <span style="font-size:11px;font-weight:700;text-transform:uppercase;color:#9b948a;letter-spacing:0.04em">Monthly Usage</span>
+          <div style="font-size:16px;font-weight:700;color:#201d1a;margin-top:2px">${ent.monthlyScanUsage || 0} / ${ent.monthlyScansLimit || 3} scans</div>
+        </div>
+        <div>
+          <span style="font-size:11px;font-weight:700;text-transform:uppercase;color:#9b948a;letter-spacing:0.04em">Scans Remaining</span>
+          <div style="font-size:16px;font-weight:700;color:#15803d;margin-top:2px">${ent.scansRemaining ?? 3} left</div>
+        </div>
+        <div>
+          <span style="font-size:11px;font-weight:700;text-transform:uppercase;color:#9b948a;letter-spacing:0.04em">History Retention</span>
+          <div style="font-size:16px;font-weight:700;color:#201d1a;margin-top:2px">${ent.historyRetentionDays || 7} days</div>
+        </div>
+      </div>
+
+      ${renewalInfo}
+
+      <div style="margin-top:20px;padding-top:16px;border-top:1px solid #f0ece6;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+        ${!isPaid ? btn('Upgrade to Creator →', '/pricing', 'btn black') : (ent.plan === 'creator' ? btn('Upgrade to Team →', '/pricing', 'btn black') : '')}
+        ${btn('Compare plans', '/pricing', 'btn outline')}
+      </div>
+    `;
+
+    if (!window.__fliqEntitlement) {
+      fetchUserEntitlement().then(() => {
+        if (location.pathname === '/dashboard/settings' && location.hash === '#Billing') {
+          render();
+        }
+      });
+    }
   } else {
     content=`<h3>Profile information</h3><label>Name<input id="profile-name" value="${esc(localStorage.getItem('fliqName')||'')}" placeholder="Your name"></label><label>Email<input value="${esc(localStorage.getItem('fliqEmail')||'')}" disabled></label><button class="btn black" data-action="save-profile">Save changes</button><div class="account-security-section" style="margin-top:36px;padding-top:24px;border-top:1px solid #ded9d2"><h3 style="font-size:14px;margin:0 0 4px;color:#111">Account Security</h3><p style="margin:0 0 16px;color:#6e6962;font-size:11px">Manage your account access and security.</p><button type="button" class="btn outline btn-logout" data-action="confirm-logout">Log out</button></div>`;
   }
@@ -3006,6 +3146,10 @@ function render(){
         go('/login');
         return;
       }
+    }
+
+    if ((isProtected(path) || path === '/pricing') && !window.__fliqEntitlement && !entitlementFetchPromise) {
+      fetchUserEntitlement().catch(() => {});
     }
 
     let out;
