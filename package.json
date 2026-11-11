@@ -13,6 +13,7 @@
     "test:ai": "node tests/ai-resilience.test.mjs",
     "test:live": "node tests/live-inspection.test.mjs",
     "test:consistency": "node tests/report-consistency.test.mjs",
+    "test:report": "node --test tests/report-rendering.test.mjs",
     "test:pricing": "node tests/pricing.test.mjs",
     "test:pricing-auth": "node tests/pricing-auth.test.mjs",
     "test:polar": "node --test tests/polar-webhooks.test.mjs",

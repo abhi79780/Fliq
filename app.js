@@ -2650,6 +2650,11 @@ function coverageTabContent(t) {
   const executed = cs.checksExecuted ?? ((cs.checksPassed || 0) + (cs.checksConfirmedFailure || 0) + (cs.checksPotentialIssue || 0) + (cs.checksInformational || 0));
   const unexecuted = cs.checksUnexecuted ?? ((cs.checksNotTested || 0) + (cs.checksUnavailable || 0));
 
+  const forms = t.functionalityReport?.forms || t.forms || { formsCount: 0 };
+  const formsCount = typeof forms.formsCount === 'number'
+    ? forms.formsCount
+    : (Array.isArray(forms.forms) ? forms.forms.length : (Array.isArray(forms) ? forms.length : 0));
+
   return `
     <div class="a11y-overview" style="margin-bottom:16px">
       <div class="a11y-stat">
@@ -2724,7 +2729,7 @@ function coverageTabContent(t) {
         </tr>
         <tr>
           <td><b>Interactive Form Testing</b></td>
-          <td><span class="a11y-badge manual">Discovered (${forms.formsCount || 0}) · Not submitted</span></td>
+          <td><span class="a11y-badge manual">Discovered (${formsCount}) · Not submitted</span></td>
           <td>Passive non-destructive policy: forms are never submitted to avoid creating fake leads, orders, or database mutations.</td>
         </tr>
         <tr>
@@ -2780,6 +2785,9 @@ async function resultPage(id, preloaded = null){
   };
 
   const tabs = ['Issues', 'Coverage', 'Accessibility', 'Performance', 'SEO', 'Security', 'Screenshots'];
+  if (!tabs.includes(activeTab)) {
+    activeTab = 'Issues';
+  }
 
   return appShell(`
     <div class="report-head">
@@ -4026,9 +4034,15 @@ document.addEventListener('click',async e=>{
     }
     if(action==='download'){
       const id=a.dataset.id;
-      apiFetch(`/api/tests/${id}`).then(r=>r.json()).then(data=>{
+      apiFetch(`/api/tests/${id}`).then(async r=>{
+        const text = await r.text();
+        let data;
+        try { data = JSON.parse(text); } catch { throw new Error('Could not parse report data.'); }
+        if (!r.ok) throw new Error(data.error || 'Failed to download report.');
         const b=new Blob([JSON.stringify(data,null,2)],{type:'application/json'}),u=URL.createObjectURL(b),link=document.createElement('a');
         link.href=u;link.download=`fliq-report-${id}.json`;link.click();URL.revokeObjectURL(u);
+      }).catch(err => {
+        alert(err.message || 'Failed to download report.');
       });
     }
     if(action==='share'){
