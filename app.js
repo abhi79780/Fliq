@@ -3183,70 +3183,108 @@ function checkoutPage(){
   const effectiveMonthly=isYearly&&plan.yearlySubtext?plan.yearlySubtext:'';
   const userEmail=localStorage.getItem('fliqEmail')||(firebaseAuth?.currentUser?.email)||'Your account';
 
-  return appShell(`
-    <div class="checkout-page" style="max-width:760px;margin:24px auto;padding:0 20px">
-      <div style="margin-bottom:20px">
-        <a href="/pricing" data-route style="font-size:13px;color:#716c65;text-decoration:none">← Change plan</a>
-      </div>
-      <div class="page-head" style="margin-bottom:24px">
-        <span class="eyebrow">CHECKOUT PREPARATION</span>
-        <h1 style="font-size:28px;margin:6px 0 8px">Review your ${esc(plan.name)} subscription</h1>
-        <p style="color:#716c65;font-size:14px">Confirm your plan selection and billing details below.</p>
-      </div>
-      <div style="display:grid;grid-template-columns:1.3fr 1fr;gap:20px;align-items:start">
-        <section class="settings-card" style="margin:0;padding:22px;border:1px solid #e7e2da;border-radius:12px;background:#fff">
-          <div style="display:flex;justify-content:space-between;align-items:baseline;border-bottom:1px solid #f0ece6;padding-bottom:14px;margin-bottom:16px">
-            <div>
-              <h3 style="font-size:18px;margin:0 0 4px">${esc(plan.name)} Plan</h3>
-              <p style="margin:0;color:#716c65;font-size:13px">${esc(plan.desc)}</p>
+  return `
+    ${nav()}
+    <div class="checkout-page-wrapper">
+      <div class="checkout-bg-glow" aria-hidden="true"></div>
+      <main class="checkout-page">
+        <div class="checkout-back-wrap">
+          <a href="/pricing" data-route class="checkout-back-link">← Change plan</a>
+        </div>
+        <div class="checkout-head">
+          <span class="eyebrow">CHECKOUT PREPARATION</span>
+          <h1 class="checkout-title">Review your <em class="checkout-plan-em">${esc(plan.name)}</em> subscription.</h1>
+          <p class="checkout-subtitle">Confirm your plan selection and billing details below.</p>
+        </div>
+        <div class="checkout-grid">
+          <section class="checkout-card checkout-details-card">
+            <div class="checkout-plan-header">
+              <div class="checkout-plan-brand">
+                <div class="checkout-plan-badge" aria-hidden="true">
+                  <svg class="checkout-crown-icon" viewBox="0 0 24 24" fill="none" stroke="#e946a9" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M2 4l3 12h14l3-12-6 7-4-7-4 7-6-7z"/>
+                    <circle cx="12" cy="18" r="1.5" fill="#e946a9"/>
+                  </svg>
+                </div>
+                <div class="checkout-plan-title-group">
+                  <h3 class="checkout-plan-name">${esc(plan.name)} Plan</h3>
+                  <p class="checkout-plan-desc">${esc(plan.desc || 'Perfect for developers and individual creators.')}</p>
+                </div>
+              </div>
+              <div class="checkout-plan-price-block">
+                <span class="checkout-price-val">${esc(price)}</span>
+                <small class="checkout-price-cycle">/${isYearly ? 'year' : 'month'}</small>
+              </div>
             </div>
-            <div style="text-align:right">
-              <span style="font-size:22px;font-weight:700">${esc(price)}</span>
-              <small style="color:#716c65;display:block;font-size:12px">/${isYearly?'year':'month'}</small>
+
+            <div class="checkout-field-row">
+              <div class="checkout-field-icon" aria-hidden="true">
+                <svg viewBox="0 0 20 20" fill="none" stroke="#6b655e" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M16 17v-1.5a3.5 3.5 0 0 0-3.5-3.5h-5A3.5 3.5 0 0 0 4 15.5V17"/><circle cx="10" cy="7" r="3"/></svg>
+              </div>
+              <div class="checkout-field-content">
+                <span class="checkout-field-label">ACCOUNT</span>
+                <div class="checkout-field-value checkout-email">${esc(userEmail)}</div>
+              </div>
             </div>
-          </div>
-          <div style="margin-bottom:16px">
-            <span style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#9b948a">Account</span>
-            <div style="margin-top:4px;font-size:14px;color:#201d1a;font-weight:500">${esc(userEmail)}</div>
-          </div>
-          <div style="margin-bottom:16px">
-            <span style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#9b948a">Billing Frequency</span>
-            <div style="margin-top:4px;font-size:14px;color:#201d1a;font-weight:500">${esc(cycleLabel)} ${effectiveMonthly?`<small style="color:#716c65;font-weight:normal">(${esc(effectiveMonthly)})</small>`:''}</div>
-          </div>
-          <div>
-            <span style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#9b948a">Included Features</span>
-            <ul style="list-style:none;padding:0;margin:8px 0 0;font-size:13px;line-height:1.7;color:#45413c">
-              ${plan.items.map(item=>`<li>✓ &nbsp;${esc(item)}</li>`).join('')}
-            </ul>
-          </div>
-        </section>
-        <section class="settings-card" style="margin:0;padding:22px;border:1px solid #e7e2da;border-radius:12px;background:#faf8f5">
-          <h3 style="font-size:16px;margin:0 0 16px;letter-spacing:-0.01em">Payment Summary</h3>
-          <div style="display:flex;justify-content:space-between;font-size:14px;margin-bottom:10px;color:#45413c">
-            <span>Subtotal</span>
-            <span style="font-weight:600">${esc(price)}</span>
-          </div>
-          <div style="display:flex;justify-content:space-between;font-size:14px;margin-bottom:14px;color:#45413c">
-            <span>Estimated Tax</span>
-            <span>$0.00</span>
-          </div>
-          <div style="display:flex;justify-content:space-between;font-size:16px;font-weight:700;border-top:1px solid #e7e2da;padding-top:14px;margin-bottom:18px;color:#201d1a">
-            <span>Total Due Today</span>
-            <span>${esc(price)}</span>
-          </div>
-          <div style="padding:12px 14px;background:#f3efe8;border-radius:8px;font-size:12px;line-height:1.5;color:#5a544b;margin-bottom:18px">
-            <strong style="display:block;color:#201d1a;margin-bottom:2px">Secure Payment via Polar</strong>
-            Subscription billing is securely processed by Polar. Entitlements activate automatically once payment is verified.
-          </div>
-          <button type="button" class="btn black full" id="start-checkout-btn" data-action="start-checkout" data-checkout-plan="${esc(plan.name.toLowerCase())}" data-checkout-period="${esc(periodParam)}" data-plan="${esc(plan.name.toLowerCase())}" data-billing-period="${esc(periodParam)}">Proceed to Checkout →</button>
-          <div id="checkout-error" style="color:#b91c1c;font-size:12px;margin-top:10px;text-align:center;line-height:1.4" role="alert" aria-live="polite"></div>
-          <div style="margin-top:12px;text-align:center">
-            <a href="/pricing" data-route style="font-size:12px;color:#716c65;text-decoration:none">Choose another plan</a>
-          </div>
-        </section>
-      </div>
+
+            <div class="checkout-field-row">
+              <div class="checkout-field-icon" aria-hidden="true">
+                <svg viewBox="0 0 20 20" fill="none" stroke="#6b655e" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="14" height="13" rx="2"/><path d="M13 2v4M7 2v4M3 8h14"/></svg>
+              </div>
+              <div class="checkout-field-content">
+                <span class="checkout-field-label">BILLING FREQUENCY</span>
+                <div class="checkout-field-value">${esc(cycleLabel)} ${effectiveMonthly ? `<small class="checkout-subtext">(${esc(effectiveMonthly)})</small>` : ''}</div>
+              </div>
+            </div>
+
+            <div class="checkout-field-row checkout-features-section">
+              <div class="checkout-field-icon" aria-hidden="true">
+                <svg viewBox="0 0 20 20" fill="none" stroke="#6b655e" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m2 6 8-4 8 4-8 4-8-4Z"/><path d="m2 10 8 4 8-4"/><path d="m2 14 8 4 8-4"/></svg>
+              </div>
+              <div class="checkout-field-content checkout-features-wrap">
+                <span class="checkout-field-label">INCLUDED FEATURES</span>
+                <ul class="checkout-features-list">
+                  ${plan.items.map(item => `<li><span class="pink-check" aria-hidden="true">✓</span> <span>${esc(item)}</span></li>`).join('')}
+                </ul>
+              </div>
+            </div>
+          </section>
+
+          <section class="checkout-card checkout-summary-card">
+            <div class="checkout-summary-head">
+              <svg class="checkout-card-icon" viewBox="0 0 20 20" fill="none" stroke="#201d1a" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="16" height="12" rx="2"/><path d="M2 8h16"/><path d="M6 13h2"/></svg>
+              <h3>Payment Summary</h3>
+            </div>
+            <div class="checkout-summary-row">
+              <span>Subtotal</span>
+              <span class="checkout-summary-amount">${esc(price)}</span>
+            </div>
+            <div class="checkout-summary-row">
+              <span>Estimated Tax</span>
+              <span class="checkout-summary-amount">$0.00</span>
+            </div>
+            <div class="checkout-summary-total">
+              <span>Total Due Today</span>
+              <span class="checkout-total-price">${esc(price)}</span>
+            </div>
+            <div class="checkout-polar-box">
+              <div class="checkout-polar-head">
+                <svg class="checkout-shield-icon" viewBox="0 0 20 20" fill="none" stroke="#e946a9" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2s6 2.5 6 7c0 5-6 9-6 9s-6-4-6-9c0-4.5 6-7 6-7z"/><path d="m7.5 10 2 2 3.5-3.5"/></svg>
+                <strong>Secure Payment via Polar</strong>
+              </div>
+              <p>Subscription billing is securely processed by Polar. Entitlements activate automatically once payment is verified.</p>
+            </div>
+            <button type="button" class="btn black full checkout-btn" id="start-checkout-btn" data-action="start-checkout" data-checkout-plan="${esc(plan.name.toLowerCase())}" data-checkout-period="${esc(periodParam)}" data-plan="${esc(plan.name.toLowerCase())}" data-billing-period="${esc(periodParam)}">Proceed to Checkout →</button>
+            <div id="checkout-error" class="checkout-error-msg" role="alert" aria-live="polite"></div>
+            <div class="checkout-choose-another">
+              <a href="/pricing" data-route>Choose another plan</a>
+            </div>
+          </section>
+        </div>
+      </main>
     </div>
-  `);
+    ${footer()}
+  `;
 }
 // In-memory object URL cache for screenshots to prevent flicker and redundant re-fetches
 const screenshotMemoryCache = new Map(); // key: url -> { objectUrl, blob, contentType, loadedAt }
