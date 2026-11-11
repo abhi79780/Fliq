@@ -51,6 +51,7 @@ import {
 import {
   getUserEntitlement,
   checkAndIncrementScanUsage,
+  refundScanUsage,
   filterTestsByRetention,
   generateReportPdfBuffer,
   PLAN_CONFIGS
@@ -461,7 +462,21 @@ async function generateAIReport(issues = [], targetUrl = '') {
 }
 
 async function executeTest(job) {
+  let isTerminal = false;
+  let terminalStatus = null; // 'completed' | 'failed' | 'timed_out'
+  let isTimedOut = false;
+  const issues = [];
+
   const update = async (fields) => {
+    // If a terminal status has already been reached, reject any conflicting status updates.
+    if (isTerminal && fields.status && fields.status !== terminalStatus) {
+      console.warn(`[FLIQ] Discarding state change to "${fields.status}" for test ${job.id} because test already reached terminal status "${terminalStatus}".`);
+      return;
+    }
+    if (fields.status === 'completed' || fields.status === 'failed' || fields.status === 'timed_out') {
+      isTerminal = true;
+      terminalStatus = fields.status;
+    }
     try {
       const currentDb = await readDB();
       const at = currentDb.findIndex(x => x.id === job.id);
@@ -489,22 +504,38 @@ async function executeTest(job) {
 
   let browser = null;
   const timeoutId = setTimeout(async () => {
+    if (isTerminal) return;
+    isTimedOut = true;
     try {
-      if (browser) await browser.close().catch(() => {});
+      if (browser) {
+        await browser.close().catch(() => {});
+        browser = null;
+      }
+    } catch {}
+    try {
+      await refundScanUsage(job.owner, { db: cloud(), localDataDir: dataDir });
+    } catch {}
+    let latestEntitlement = null;
+    try {
+      latestEntitlement = await getUserEntitlement(job.owner, { db: cloud(), localDataDir: dataDir });
     } catch {}
     await update({
-      status: 'failed',
+      status: 'timed_out',
       progress: 0,
-      stage: 'Failed',
+      stage: 'Timed Out',
       error: 'Test execution exceeded timeout limit (90s).',
-      completedAt: new Date().toISOString()
+      completedAt: new Date().toISOString(),
+      issues: issues.length ? issues : [],
+      entitlement: latestEntitlement
     });
   }, 90000);
 
   await acquireScanSlot();
   try {
+    if (isTimedOut || isTerminal) return;
     const { chromium } = await import('playwright');
     const { url } = await validateTarget(job.url);
+    if (isTimedOut || isTerminal) return;
     await update({ status: 'running', progress: 10, stage: 'Initializing browser', currentUrl: job.url, issues: [] });
     browser = await chromium.launch({
       headless: true,
@@ -564,7 +595,7 @@ async function executeTest(job) {
       } catch {}
     });
 
-    const issues = [];
+    issues.length = 0;
     const mainOrigin = new URL(url).origin;
 
     // Apply the same public-address policy to every navigation and subresource, including redirects.
@@ -644,11 +675,12 @@ async function executeTest(job) {
     let response = null;
     let mainResponseHeaders = {};
     try {
+      // Per-stage timeout: Page navigation capped at maximum 20 seconds
+      response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
+      // Optional load state wait capped at maximum 5 seconds with graceful fallback
       try {
-        response = await page.goto(url, { waitUntil: 'load', timeout: 25000 });
-      } catch (loadTimeoutErr) {
-        response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
-      }
+        await page.waitForLoadState('load', { timeout: 5000 });
+      } catch {}
       if (response) {
         mainResponseHeaders = response.headers() || {};
       }
@@ -667,9 +699,9 @@ async function executeTest(job) {
         selector: 'document',
         htmlSnippet: '',
         evidence: e.message.slice(0, 500),
-        expectedBehavior: 'Page should complete initial DOM navigation within 30 seconds.',
+        expectedBehavior: 'Page should complete initial DOM navigation within 20 seconds.',
         actualBehavior: `Navigation failed: ${e.message.slice(0, 300)}`,
-        description: 'The browser could not complete document loading within the 30-second navigation timeout.',
+        description: 'The browser could not complete document loading within the 20-second navigation timeout.',
         whyItMatters: 'Unresponsive pages prevent users and search engines from accessing content.',
         wcagCriterion: 'Web Availability & Performance',
         reproductionSteps: '1. Navigate to URL in clean browser session.\n2. Measure connection timing.',
@@ -813,22 +845,31 @@ async function executeTest(job) {
     await update({ progress: 50, stage: 'Testing functionality', currentUrl: finalUrl });
     let broken = 0;
     const brokenLinksList = [];
-    const links = await page.locator('a[href]').evaluateAll(as => as.slice(0, 80).map(a => a.href).filter(h => h.startsWith(location.origin)));
-    for (const href of [...new Set(links)].slice(0, 25)) {
-      try {
-        await validateTarget(href);
-        const r = await page.request.get(href, { timeout: 4000, maxRedirects: 0 });
-        if (r.status() >= 400) {
-          broken++;
-          brokenLinksList.push({
-            url: href,
-            status: r.status(),
-            selector: `a[href="${href}"]`,
-            htmlSnippet: `<a href="${href}">`,
-            suggestedFix: `Update link destination or remove broken reference (returned HTTP ${r.status()})`
-          });
-        }
-      } catch {}
+    let links = [];
+    try {
+      links = await page.locator('a[href]').evaluateAll(as => as.slice(0, 80).map(a => a.href).filter(h => h && h.startsWith(location.origin)));
+    } catch {}
+    const uniqueLinks = [...new Set(links)].slice(0, 15);
+    const linkCheckDeadline = Date.now() + 10000;
+    const batchSize = 5;
+    for (let i = 0; i < uniqueLinks.length && Date.now() < linkCheckDeadline && !isTimedOut && !isTerminal; i += batchSize) {
+      const batch = uniqueLinks.slice(i, i + batchSize);
+      await Promise.all(batch.map(async href => {
+        try {
+          await validateTarget(href);
+          const r = await page.request.get(href, { timeout: 2500, maxRedirects: 0 });
+          if (r.status() >= 400) {
+            broken++;
+            brokenLinksList.push({
+              url: href,
+              status: r.status(),
+              selector: `a[href="${href}"]`,
+              htmlSnippet: `<a href="${href}">`,
+              suggestedFix: `Update link destination or remove broken reference (returned HTTP ${r.status()})`
+            });
+          }
+        } catch {}
+      }));
     }
 
     if (brokenLinksList.length > 0) {
@@ -1179,7 +1220,7 @@ async function executeTest(job) {
       viewports: { desktop: true, tablet: true, mobile: true }
     });
 
-    await update({
+    const completedPayload = {
       status: 'completed',
       progress: 100,
       stage: 'Complete',
@@ -1212,8 +1253,26 @@ async function executeTest(job) {
       screenshots: [`${job.id}-desktop.png`, `${job.id}-tablet.png`, `${job.id}-mobile.png`],
       liveScreenshot: liveScreenshotFile,
       liveScreenshotTime: Date.now()
-    });
+    };
+
+    let latestEntitlement = null;
+    try {
+      latestEntitlement = await getUserEntitlement(job.owner, { db: cloud(), localDataDir: dataDir });
+    } catch (entErr) {
+      console.warn('[FLIQ] Entitlement resolution warning at scan complete:', entErr.message);
+    }
+    if (latestEntitlement) {
+      completedPayload.entitlement = latestEntitlement;
+    }
+    if (isTimedOut || isTerminal) {
+      console.warn(`[FLIQ] Scan ${job.id} reached terminal state (${terminalStatus}) before complete payload; discarding complete update.`);
+      return;
+    }
+    await update(completedPayload);
   } catch (e) {
+    if (isTimedOut || isTerminal) {
+      return;
+    }
     let message = e.message;
     if (e.code === 'ERR_MODULE_NOT_FOUND') {
       message = 'Playwright is not installed. Run: npm install && npx playwright install chromium';
@@ -1222,11 +1281,32 @@ async function executeTest(job) {
     } else if (e.message && (e.message.includes('Target page, context or browser has been closed') || e.message.includes('Crash') || e.message.includes('OOM') || e.message.includes('SIGKILL') || e.message.includes('Out of memory') || e.message.includes('browser has disconnected'))) {
       message = 'Scan memory limit exceeded or browser process crashed. Please retry with a lighter target page or restart the worker.';
     }
-    await update({ status: 'failed', progress: 0, stage: 'Failed', error: message, completedAt: new Date().toISOString() });
+
+    // Refund scan usage so failed scans do not consume scan quota
+    try {
+      await refundScanUsage(job.owner, { db: cloud(), localDataDir: dataDir });
+    } catch (refErr) {
+      console.warn('[FLIQ] Scan usage refund error:', refErr.message);
+    }
+    let latestEntitlement = null;
+    try {
+      latestEntitlement = await getUserEntitlement(job.owner, { db: cloud(), localDataDir: dataDir });
+    } catch {}
+
+    await update({
+      status: 'failed',
+      progress: 0,
+      stage: 'Failed',
+      error: message,
+      completedAt: new Date().toISOString(),
+      issues: issues.length ? issues : [],
+      entitlement: latestEntitlement
+    });
   } finally {
     clearTimeout(timeoutId);
     if (browser) {
       await browser.close().catch(() => {});
+      browser = null;
     }
     releaseScanSlot();
   }
@@ -1838,33 +1918,81 @@ const server=http.createServer(async(req,res)=>{
         }
 
         const {owner,sharedWithUids,...safe}=j;
-        return send(res,200,{...safe,canManageSharing:isOwner && entitlement.allowTeamCollaboration});
+        return send(res,200,{
+          ...safe,
+          canManageSharing:isOwner && entitlement.allowTeamCollaboration,
+          entitlement: isOwner ? entitlement : undefined
+        });
       }catch(e){return send(res,e.status||401,{error:e.message});}
     }
-    const sm=pathname.match(/^\/api\/screenshots\/([\w-]+\.png)$/); 
-    if(sm){
-      try{
-        const user=await verifiedUser(req);
-        const id=sm[1].replace(/-(desktop|tablet|mobile)\.png$/,'');
-        let j=(await readDB()).find(x=>x.id===id);
-        if(!j&&adminApp&&user.uid!=='local'){
-          const d=await cloud().collection('tests').doc(id).get();
-          if(d.exists) j=d.data();
+    if (pathname.startsWith('/api/screenshots/')) {
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        return send(res, 405, { error: 'Method not allowed. Screenshots require GET or HEAD.' });
+      }
+      const rawFilename = pathname.slice('/api/screenshots/'.length);
+      const safeFilename = path.basename(rawFilename);
+      const sm = safeFilename.match(/^([a-zA-Z0-9_-]+)\.(png|jpg|jpeg|webp)$/i);
+      if (!sm) {
+        return send(res, 404, { error: 'Screenshot not found.' });
+      }
+
+      try {
+        const user = await verifiedUser(req);
+        const baseName = sm[1];
+        const ext = sm[2].toLowerCase();
+        const testId = baseName.replace(/-(desktop|tablet|mobile|live)$/, '');
+
+        let j = (await readDB()).find(x => x.id === testId);
+        if (!j && adminApp && user.uid !== 'local') {
+          try {
+            const d = await cloud().collection('tests').doc(testId).get();
+            if (d.exists) j = d.data();
+          } catch {}
         }
-        if(!j) return send(res,404,{error:'Screenshot not found.'});
+        if (!j) return send(res, 404, { error: 'Screenshot not found.' });
 
         const isOwner = user.uid === j.owner;
-        const isShared = (j.sharedWithUids||[]).includes(user.uid);
+        const isShared = Array.isArray(j.sharedWithUids) && j.sharedWithUids.includes(user.uid);
 
-        if(!isOwner && !isShared && (adminApp || user.uid !== 'local' || j.owner !== 'local')) {
-          return send(res,404,{error:'Screenshot not found.'});
+        if (!isOwner && !isShared && (adminApp || user.uid !== 'local' || j.owner !== 'local')) {
+          return send(res, 404, { error: 'Screenshot not found.' });
         }
-        const b=await fs.readFile(path.join(dataDir,path.basename(sm[1])));
-        res.writeHead(200,{'content-type':'image/png','cache-control':'no-store'});
-        return res.end(b);
-      }catch(e){return send(res,e.status||404,{error:'Screenshot not found.'});}
+
+        const filePath = path.join(dataDir, safeFilename);
+        try {
+          await fs.access(filePath);
+        } catch {
+          return send(res, 404, { error: 'Screenshot not found.' });
+        }
+
+        const mimeTypes = {
+          png: 'image/png',
+          jpg: 'image/jpeg',
+          jpeg: 'image/jpeg',
+          webp: 'image/webp'
+        };
+        const contentType = mimeTypes[ext] || 'image/png';
+        const isCompleted = j.status === 'completed';
+        const cacheControl = isCompleted
+          ? 'private, max-age=3600'
+          : 'no-cache, no-store, must-revalidate';
+
+        const fileBytes = await fs.readFile(filePath);
+        res.writeHead(200, {
+          'content-type': contentType,
+          'cache-control': cacheControl,
+          'content-length': fileBytes.length,
+          'x-content-type-options': 'nosniff'
+        });
+        if (req.method === 'HEAD') {
+          return res.end();
+        }
+        return res.end(fileBytes);
+      } catch (e) {
+        return send(res, e.status || 404, { error: 'Screenshot not found.' });
+      }
     }
-    return send(res,404,{error:'Not found.'});
+    return send(res, 404, { error: 'Not found.' });
   }
   let file=pathname==='/'?path.join(root,'index.html'):path.resolve(root,decodeURIComponent(pathname.slice(1))); if(!file.startsWith(root+path.sep)){res.writeHead(403);return res.end();}
   if(pathname!=='/'&&!file.startsWith(path.resolve(root,'public')+path.sep)){const publicFile=path.resolve(root,'public',decodeURIComponent(pathname.slice(1)));try{await fs.access(publicFile);file=publicFile;}catch{}}
@@ -1969,6 +2097,7 @@ export {
   verifiedUser,
   getUserEntitlement,
   checkAndIncrementScanUsage,
+  refundScanUsage,
   filterTestsByRetention,
   generateReportPdfBuffer,
   PLAN_CONFIGS

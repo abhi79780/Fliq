@@ -11,6 +11,7 @@ import {
   formatUserEntitlement,
   getUserEntitlement,
   checkAndIncrementScanUsage,
+  refundScanUsage,
   filterTestsByRetention,
   generateReportPdfBuffer,
   withLocalLock,
@@ -575,5 +576,95 @@ describe('FLIQ Subscription Entitlements & Usage Enforcement Suite', () => {
     );
 
     assert.equal(localLockQueue.has(failingUser), false, 'Lock queue entry must be removed even when operation throws');
+  });
+
+  // =========================================================================
+  // REQUIREMENT 17: refundScanUsage reverts 1 scan usage count in Firestore
+  // =========================================================================
+  test('17. refundScanUsage reverts 1 scan usage count when scan fails in Firestore', async () => {
+    const userId = 'creator-refund-test-user';
+    const period = getCurrentUsagePeriod();
+    await mockDb.collection('users').doc(userId).set({
+      plan: 'creator',
+      subscriptionStatus: 'active',
+      monthlyScanUsage: 5,
+      currentUsagePeriod: period
+    });
+
+    const result = await refundScanUsage(userId, { db: mockDb });
+    assert.ok(result, 'Refund result should be non-null');
+    assert.equal(result.success, true);
+    assert.equal(result.usage, 4);
+    assert.equal(result.currentPeriod, period);
+
+    const doc = await mockDb.collection('users').doc(userId).get();
+    assert.equal(doc.data().monthlyScanUsage, 4, 'Firestore monthlyScanUsage should be decremented to 4');
+  });
+
+  // =========================================================================
+  // REQUIREMENT 18: refundScanUsage does not decrement usage below 0
+  // =========================================================================
+  test('18. refundScanUsage does not decrement usage below 0', async () => {
+    const userId = 'zero-usage-user';
+    const period = getCurrentUsagePeriod();
+    await mockDb.collection('users').doc(userId).set({
+      plan: 'free',
+      subscriptionStatus: 'active',
+      monthlyScanUsage: 0,
+      currentUsagePeriod: period
+    });
+
+    const result = await refundScanUsage(userId, { db: mockDb });
+    assert.equal(result, null, 'Refund on 0 usage should return null');
+
+    const doc = await mockDb.collection('users').doc(userId).get();
+    assert.equal(doc.data().monthlyScanUsage, 0, 'Firestore monthlyScanUsage should remain 0');
+  });
+
+  // =========================================================================
+  // REQUIREMENT 19: refundScanUsage works with local fallback storage and locks
+  // =========================================================================
+  test('19. refundScanUsage correctly reverts usage in local file storage fallback', async () => {
+    const tempDir = path.join(testDataDir, `refund-local-test-${Date.now()}`);
+    await fs.mkdir(tempDir, { recursive: true });
+
+    try {
+      const subFile = path.join(tempDir, 'subscriptions.json');
+      const period = getCurrentUsagePeriod();
+      const initialRecords = [
+        {
+          userId: 'local-refund-user',
+          plan: 'creator',
+          subscriptionStatus: 'active',
+          monthlyScanUsage: 2,
+          currentUsagePeriod: period
+        }
+      ];
+      await fs.writeFile(subFile, JSON.stringify(initialRecords, null, 2), 'utf8');
+
+      // First refund: 2 -> 1
+      const res1 = await refundScanUsage('local-refund-user', { localDataDir: tempDir });
+      assert.ok(res1);
+      assert.equal(res1.success, true);
+      assert.equal(res1.usage, 1);
+
+      const fileData1 = JSON.parse(await fs.readFile(subFile, 'utf8'));
+      assert.equal(fileData1[0].monthlyScanUsage, 1);
+
+      // Second refund: 1 -> 0
+      const res2 = await refundScanUsage('local-refund-user', { localDataDir: tempDir });
+      assert.ok(res2);
+      assert.equal(res2.success, true);
+      assert.equal(res2.usage, 0);
+
+      // Third refund: 0 -> no change, returns null
+      const res3 = await refundScanUsage('local-refund-user', { localDataDir: tempDir });
+      assert.equal(res3, null);
+
+      const fileData3 = JSON.parse(await fs.readFile(subFile, 'utf8'));
+      assert.equal(fileData3[0].monthlyScanUsage, 0);
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    }
   });
 });

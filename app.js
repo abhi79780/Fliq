@@ -102,11 +102,15 @@ async function initializeFirebaseClient() {
         localStorage.setItem('fliqEmail', u.email || '');
         localStorage.setItem('fliqName', u.displayName || '');
         fetchUserEntitlement().catch(() => {});
+        setupUserFirestoreListener(u.uid).catch(() => {});
+      } else {
+        teardownUserFirestoreListener();
       }
       notifyAuthSubscribers(u);
     }, err => {
       console.error('[FLIQ] Central onAuthStateChanged error:', err);
       authStateResolved = true;
+      teardownUserFirestoreListener();
       notifyAuthSubscribers(null);
     });
 
@@ -310,6 +314,7 @@ async function executeSignOut() {
       sessionStorage.removeItem('fliqSelectedPlan');
       sessionStorage.removeItem('fliqSelectedPeriod');
     } catch {}
+    teardownUserFirestoreListener();
     resolvedAuthUser = null;
     logoutConfirmOpen = false;
     isLoggingOut = false;
@@ -331,7 +336,10 @@ window.fliqAuth={
   handlePlanSelect,
   navigatePostAuth,
   signOut: executeSignOut,
-  authHeaders
+  authHeaders,
+  updateBillingUi,
+  applyAuthoritativeEntitlement,
+  fetchUserEntitlement
 };
 function friendlyFirebaseAuthError(error){const messages={'auth/popup-closed-by-user':'The sign-in window was closed before finishing.','auth/popup-blocked':'Your browser blocked the sign-in window. Allow popups for this site and try again.','auth/unauthorized-domain':'This local host is not authorized in Firebase Authentication. Add it to Firebase Authentication → Settings → Authorized domains.','auth/operation-not-allowed':'This sign-in method is not enabled in Firebase Authentication.','auth/account-exists-with-different-credential':'An account with this email already uses another sign-in method. Sign in with that method first.','auth/email-already-in-use':'An account already exists for this email. Sign in instead.','auth/invalid-email':'Enter a valid email address.','auth/weak-password':'Choose a stronger password (at least 6 characters).','auth/invalid-credential':'Email or password is incorrect.','auth/invalid-login-credentials':'Email or password is incorrect.','auth/user-disabled':'This account is disabled.','auth/too-many-requests':'Too many attempts. Wait a little and try again.','auth/network-request-failed':'Could not reach Firebase. Check your connection and try again.','auth/invalid-api-key':'The Firebase Web API key is invalid. Check the Web App configuration in .env.'};return messages[error?.code]||'Firebase could not complete the request. Check your details and try again.'}
 async function signInWithOAuth(button){const message=document.querySelector('#oauth-message'),buttons=[...document.querySelectorAll('[data-oauth]')];if(!message)return;buttons.forEach(x=>x.disabled=true);message.textContent='Connecting to Google…';try{await firebaseStatusPromise;if(!firebaseWebConfigured)throw Error('Firebase Web Authentication is not ready. Missing: '+(firebaseWebMissing.join(', ')||'Web App configuration')+'.');
@@ -398,6 +406,127 @@ async function apiFetch(url,options={}){
 
 let entitlementFetchPromise = null;
 let entitlementLastFetched = 0;
+const entitlementSubscribers = [];
+
+function notifyEntitlementSubscribers(ent) {
+  for (const fn of entitlementSubscribers) {
+    try { fn(ent); } catch (e) { console.error('[FLIQ] Entitlement subscriber error:', e); }
+  }
+}
+
+function updateBillingUi(ent = window.__fliqEntitlement) {
+  if (!ent) return;
+  const usageEl = document.querySelector('#billing-monthly-usage');
+  const remainingEl = document.querySelector('#billing-scans-remaining');
+  if (usageEl) {
+    usageEl.textContent = `${ent.monthlyScanUsage || 0} / ${ent.monthlyScansLimit || 3} scans`;
+  }
+  if (remainingEl) {
+    remainingEl.textContent = `${ent.scansRemaining ?? 3} left`;
+  }
+  updateSidebarEntitlement();
+}
+
+let entitlementBroadcastChannel = null;
+try {
+  if (typeof BroadcastChannel !== 'undefined') {
+    entitlementBroadcastChannel = new BroadcastChannel('fliq_entitlement_sync');
+    entitlementBroadcastChannel.onmessage = (event) => {
+      if (event?.data?.type === 'ENTITLEMENT_SYNC' && event.data.entitlement) {
+        applyAuthoritativeEntitlement(event.data.entitlement, false);
+      }
+    };
+  }
+} catch (bcErr) {
+  console.warn('[FLIQ] BroadcastChannel init note:', bcErr.message);
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (event) => {
+    if (event.key === 'fliq_entitlement_sync_event' && event.newValue) {
+      try {
+        const payload = JSON.parse(event.newValue);
+        if (payload?.entitlement) {
+          applyAuthoritativeEntitlement(payload.entitlement, false);
+        }
+      } catch {}
+    }
+  });
+
+  window.addEventListener('focus', () => {
+    if (Date.now() - entitlementLastFetched > 8000) {
+      fetchUserEntitlement(true).catch(() => {});
+    }
+  });
+}
+
+function broadcastEntitlementSync(entitlement) {
+  if (!entitlement) return;
+  if (entitlementBroadcastChannel) {
+    try {
+      entitlementBroadcastChannel.postMessage({
+        type: 'ENTITLEMENT_SYNC',
+        entitlement,
+        timestamp: Date.now()
+      });
+    } catch {}
+  }
+  try {
+    localStorage.setItem('fliq_entitlement_sync_event', JSON.stringify({
+      entitlement,
+      timestamp: Date.now()
+    }));
+  } catch {}
+}
+
+function applyAuthoritativeEntitlement(data, syncCrossTab = true) {
+  if (!data || typeof data !== 'object') return;
+  window.__fliqEntitlement = data;
+  entitlementLastFetched = Date.now();
+  updateSidebarEntitlement();
+  updateBillingUi(data);
+  if (syncCrossTab) {
+    broadcastEntitlementSync(data);
+  }
+  notifyEntitlementSubscribers(data);
+}
+window.applyAuthoritativeEntitlement = applyAuthoritativeEntitlement;
+window.updateBillingUi = updateBillingUi;
+
+let userFirestoreUnsubscribe = null;
+async function setupUserFirestoreListener(uid) {
+  if (userFirestoreUnsubscribe) {
+    try { userFirestoreUnsubscribe(); } catch {}
+    userFirestoreUnsubscribe = null;
+  }
+  if (!uid || uid === 'local' || !firebaseWebConfigured) return;
+
+  try {
+    const base = 'https://www.gstatic.com/firebasejs/13.1.0/';
+    const firestoreSdk = await import(`${base}firebase-firestore.js`);
+    const { auth } = await initializeFirebaseClient();
+    const app = auth.app;
+    const db = firestoreSdk.getFirestore(app);
+    const userDocRef = firestoreSdk.doc(db, 'users', uid);
+
+    userFirestoreUnsubscribe = firestoreSdk.onSnapshot(userDocRef, (snap) => {
+      if (snap.exists()) {
+        fetchUserEntitlement(true).catch(() => {});
+      }
+    }, (err) => {
+      console.warn('[FLIQ] Firestore real-time listener notice:', err.message);
+    });
+  } catch (err) {
+    console.warn('[FLIQ] Real-time Firestore client listener setup note:', err.message);
+  }
+}
+
+function teardownUserFirestoreListener() {
+  if (userFirestoreUnsubscribe) {
+    try { userFirestoreUnsubscribe(); } catch {}
+    userFirestoreUnsubscribe = null;
+  }
+}
 
 async function fetchUserEntitlement(force = false) {
   const now = Date.now();
@@ -423,9 +552,7 @@ async function fetchUserEntitlement(force = false) {
         return window.__fliqEntitlement;
       }
       const data = await r.json();
-      window.__fliqEntitlement = data;
-      entitlementLastFetched = Date.now();
-      updateSidebarEntitlement();
+      applyAuthoritativeEntitlement(data, true);
       return data;
     } catch (e) {
       console.warn('[FLIQ] Failed to fetch subscription entitlement:', e.message);
@@ -1383,6 +1510,11 @@ function startGlobalScanTracker() {
       const t = await r.json();
       if (t.status === 'completed' || t.status === 'failed') {
         clearActiveScanState();
+        if (t.entitlement) {
+          applyAuthoritativeEntitlement(t.entitlement, true);
+        } else {
+          fetchUserEntitlement(true).catch(() => {});
+        }
         if (Array.isArray(window.__fliqCachedTests)) {
           const idx = window.__fliqCachedTests.findIndex(item => item.id === t.id);
           if (idx >= 0) window.__fliqCachedTests[idx] = t;
@@ -1392,6 +1524,8 @@ function startGlobalScanTracker() {
         updateDashboardDom(window.__fliqCachedTests);
         if (location.pathname.includes(`/tests/${t.id}`)) {
           render();
+        } else if (location.pathname === '/dashboard/settings' && location.hash === '#Billing') {
+          updateBillingUi();
         }
       } else {
         setActiveScanState(t.id, t.url || active.url, t.stage || 'Running', t.progress || active.progress, t.status);
@@ -1753,16 +1887,21 @@ function testRows(rows){
     const isRunning = t.status === 'running' || t.status === 'queued';
     const isCompleted = t.status === 'completed';
     const isFailed = t.status === 'failed';
-    const statusBadge = isRunning 
+    const isTimedOut = t.status === 'timed_out';
+    const statusBadge = isRunning
       ? `<span class="badge running"><span class="live-pulse-dot" style="display:inline-block;width:6px;height:6px;margin-right:4px"></span>Running (${t.progress || 10}%)</span>`
-      : `<span class="badge ${t.status}">${t.status}</span>`;
+      : isCompleted
+      ? `<span class="badge completed">Completed</span>`
+      : isTimedOut
+      ? `<span class="badge timed_out">Timed out</span>`
+      : `<span class="badge failed">Failed</span>`;
     const summaryCol = isRunning
       ? `<span>${esc(t.stage || 'In progress…')}</span>`
       : isCompleted
       ? `<span>${t.issues?.length || 0} issues</span>`
-      : isFailed
-      ? `<span style="color:#a02c24">${esc(t.error ? t.error.slice(0, 32) + (t.error.length > 32 ? '…' : '') : 'Failed')}</span>`
-      : `<span>—</span>`;
+      : isTimedOut
+      ? `<span style="color:#9c4221">Timed out (90s limit)</span>`
+      : `<span style="color:#a02c24">${esc(t.error ? t.error.slice(0, 32) + (t.error.length > 32 ? '…' : '') : 'Failed')}</span>`;
     return `<a class="test-row" href="/dashboard/tests/${t.id}" data-route><span class="site-dot">◎</span><span class="test-host">${esc(t.hostname||t.url)}<small>${new Date(t.createdAt).toLocaleString()}</small></span>${statusBadge}${summaryCol}<b>View →</b></a>`;
   }).join('')}</div>` : `<div class="empty"><div class="empty-icon">◎</div><h3>Your testing story starts here.</h3><p>Run your first test to see a clear report with actionable findings.</p><button class="btn outline" data-go="/dashboard/new-test">Start a test →</button></div>`;
 }
@@ -1845,15 +1984,50 @@ async function progressPage(id, preloaded = null) {
     return resultPage(id, t);
   }
 
+  if (t.status === 'timed_out') {
+    clearActiveScanState();
+    return appShell(`
+      <div class="empty" style="max-width:680px;margin:40px auto;text-align:center">
+        <div class="empty-icon" style="color:#d97706;font-size:36px;margin-bottom:8px">⏱</div>
+        <span class="eyebrow" style="color:#d97706;font-weight:700;display:block;margin-bottom:6px">EXECUTION TIMED OUT</span>
+        <h2>Website Inspection Timed Out</h2>
+        <p style="color:#67625c;margin:8px auto 16px;max-width:480px;line-height:1.55">
+          ${esc(t.error || 'The test execution exceeded the 90-second timeout limit.')} We refunded this scan to your account so it does not count against your monthly limit.
+        </p>
+        <div style="background:#fffdfa;border:1px solid #e5e0d8;border-radius:6px;padding:12px 16px;max-width:480px;margin:0 auto 20px;text-align:left;font-size:12px">
+          <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+            <span style="color:#716c65">Target URL:</span>
+            <code>${esc(t.url)}</code>
+          </div>
+          <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+            <span style="color:#716c65">Last Stage:</span>
+            <b>${esc(t.stage || 'Timed Out')}</b>
+          </div>
+          ${(t.issues && t.issues.length > 0) ? `
+            <div style="display:flex;justify-content:space-between;margin-top:6px;padding-top:6px;border-top:1px dashed #e5e0d8">
+              <span style="color:#716c65">Partial Findings Detected:</span>
+              <b>${t.issues.length} issue(s) before timeout</b>
+            </div>
+          ` : ''}
+        </div>
+        <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+          <button class="btn black" data-action="retry-test-url" data-url="${esc(t.url)}">Retry website scan ↺</button>
+          <a class="btn outline" href="/dashboard" data-route>Return to dashboard</a>
+        </div>
+      </div>
+    `);
+  }
+
   if (t.status === 'failed') {
     clearActiveScanState();
     return appShell(`
       <div class="empty" style="max-width:680px;margin:40px auto;text-align:center">
         <div class="empty-icon" style="color:#d32f2f">⚠</div>
+        <span class="eyebrow" style="color:#d32f2f;font-weight:700;display:block;margin-bottom:6px">INSPECTION FAILED</span>
         <h2>Inspection Failed</h2>
-        <p style="color:#67625c;margin:8px 0 16px">${esc(t.error || 'The test could not be completed.')}</p>
-        <div style="display:flex;gap:10px;justify-content:center">
-          <a class="btn black" href="/dashboard/new-test" data-route>Try another URL</a>
+        <p style="color:#67625c;margin:8px 0 16px">${esc(t.error || 'The test could not be completed.')} We refunded this scan to your account.</p>
+        <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+          <button class="btn black" data-action="retry-test-url" data-url="${esc(t.url)}">Retry website scan ↺</button>
           <a class="btn outline" href="/dashboard" data-route>Return to dashboard</a>
         </div>
       </div>
@@ -2585,6 +2759,7 @@ async function resultPage(id, preloaded = null){
   if (t.error) return appShell(`<div class="empty"><h2>${esc(t.error)}</h2><a href="/dashboard" data-route>Return to dashboard</a></div>`);
   if (t.status !== 'completed') return progressPage(id, t);
   clearActiveScanState();
+  clearScreenshotMemoryCache(t.id);
 
   const allIssues = t.issues || [];
   const confirmedCount = allIssues.filter(i => i.classification === 'Confirmed Failure' || (!i.classification && i.type === 'failure')).length;
@@ -2675,12 +2850,27 @@ async function resultPage(id, preloaded = null){
 
     ${activeTab==='Screenshots'?`
       <div class="shots" style="grid-template-columns: repeat(auto-fit, minmax(280px, 1fr))">
-        ${(t.screenshots && t.screenshots.length > 0) ? t.screenshots.map(s=>`
-          <figure>
-            <img data-screenshot="/api/screenshots/${s}" alt="${s.includes('mobile')?'Mobile':s.includes('tablet')?'Tablet':'Desktop'} website screenshot">
-            <figcaption>${s.includes('mobile')?'Mobile (390px)':s.includes('tablet')?'Tablet (768px)':'Desktop (1440px)'} viewport capture</figcaption>
-          </figure>
-        `).join('') : `
+        ${(t.screenshots && t.screenshots.length > 0) ? t.screenshots.map(s => {
+          const shotUrl = `/api/screenshots/${s}`;
+          const cached = screenshotMemoryCache.get(shotUrl);
+          const cachedSrc = cached ? cached.objectUrl : '';
+          const isMobile = s.includes('mobile');
+          const isTablet = s.includes('tablet');
+          const aspectClass = isMobile ? 'shot-mobile' : isTablet ? 'shot-tablet' : 'shot-desktop';
+          const label = isMobile ? 'Mobile (390px)' : isTablet ? 'Tablet (768px)' : 'Desktop (1440px)';
+          return `
+            <figure class="screenshot-figure ${aspectClass}">
+              <div class="screenshot-frame">
+                <img
+                  data-screenshot="${shotUrl}"
+                  ${cachedSrc ? `src="${cachedSrc}" class="screenshot-loaded"` : 'class="screenshot-loading"'}
+                  alt="${label} website screenshot"
+                  loading="lazy">
+              </div>
+              <figcaption>${label} viewport capture</figcaption>
+            </figure>
+          `;
+        }).join('') : `
           <div class="empty" style="grid-column: 1 / -1; padding: 40px 20px">
             <div class="empty-icon" style="font-size:24px">📷</div>
             <h3 style="font-size:16px;margin:8px 0">No Visual Screenshots Available</h3>
@@ -2948,11 +3138,11 @@ function settings(){
         </div>
         <div>
           <span style="font-size:11px;font-weight:700;text-transform:uppercase;color:#9b948a;letter-spacing:0.04em">Monthly Usage</span>
-          <div style="font-size:16px;font-weight:700;color:#201d1a;margin-top:2px">${ent.monthlyScanUsage || 0} / ${ent.monthlyScansLimit || 3} scans</div>
+          <div id="billing-monthly-usage" style="font-size:16px;font-weight:700;color:#201d1a;margin-top:2px">${ent.monthlyScanUsage || 0} / ${ent.monthlyScansLimit || 3} scans</div>
         </div>
         <div>
           <span style="font-size:11px;font-weight:700;text-transform:uppercase;color:#9b948a;letter-spacing:0.04em">Scans Remaining</span>
-          <div style="font-size:16px;font-weight:700;color:#15803d;margin-top:2px">${ent.scansRemaining ?? 3} left</div>
+          <div id="billing-scans-remaining" style="font-size:16px;font-weight:700;color:#15803d;margin-top:2px">${ent.scansRemaining ?? 3} left</div>
         </div>
         <div>
           <span style="font-size:11px;font-weight:700;text-transform:uppercase;color:#9b948a;letter-spacing:0.04em">History Retention</span>
@@ -2968,13 +3158,11 @@ function settings(){
       </div>
     `;
 
-    if (!window.__fliqEntitlement) {
-      fetchUserEntitlement().then(() => {
-        if (location.pathname === '/dashboard/settings' && location.hash === '#Billing') {
-          render();
-        }
-      });
-    }
+    fetchUserEntitlement(true).then((updated) => {
+      if (updated && location.pathname === '/dashboard/settings' && location.hash === '#Billing') {
+        updateBillingUi(updated);
+      }
+    }).catch(() => {});
   } else {
     content=`<h3>Profile information</h3><label>Name<input id="profile-name" value="${esc(localStorage.getItem('fliqName')||'')}" placeholder="Your name"></label><label>Email<input value="${esc(localStorage.getItem('fliqEmail')||'')}" disabled></label><button class="btn black" data-action="save-profile">Save changes</button><div class="account-security-section" style="margin-top:36px;padding-top:24px;border-top:1px solid #ded9d2"><h3 style="font-size:14px;margin:0 0 4px;color:#111">Account Security</h3><p style="margin:0 0 16px;color:#6e6962;font-size:11px">Manage your account access and security.</p><button type="button" class="btn outline btn-logout" data-action="confirm-logout">Log out</button></div>`;
   }
@@ -3060,13 +3248,50 @@ function checkoutPage(){
     </div>
   `);
 }
+// In-memory object URL cache for screenshots to prevent flicker and redundant re-fetches
+const screenshotMemoryCache = new Map(); // key: url -> { objectUrl, blob, contentType, loadedAt }
+let currentCachedTestId = null;
+
+function clearScreenshotMemoryCache(newTestId = null) {
+  if (currentCachedTestId && newTestId && currentCachedTestId !== newTestId) {
+    for (const [url, entry] of screenshotMemoryCache.entries()) {
+      if (entry && entry.objectUrl) {
+        try { URL.revokeObjectURL(entry.objectUrl); } catch {}
+      }
+    }
+    screenshotMemoryCache.clear();
+  }
+  currentCachedTestId = newTestId;
+}
+
+function showScreenshotFallback(img) {
+  if (!img || !img.parentElement) return;
+  const frame = img.parentElement;
+  if (frame.querySelector('.screenshot-empty-card')) return;
+  img.style.display = 'none';
+  const label = img.alt || 'Screenshot';
+  const placeholder = document.createElement('div');
+  placeholder.className = 'screenshot-empty-card';
+  placeholder.innerHTML = `
+    <div class="empty-icon" style="font-size:24px;margin-bottom:6px">📷</div>
+    <b style="font-size:12px;color:#201d1a;display:block">${esc(label)}</b>
+    <span style="font-size:11px;color:#716c65;display:block;margin-top:2px">Preview image unavailable</span>
+  `;
+  frame.appendChild(placeholder);
+}
+
 async function loadLivePreview(id) {
   const img = document.querySelector('#live-preview-img');
   if (!img || !id) return;
   try {
     const r = await apiFetch(`/api/tests/${id}/live-screenshot?t=${Date.now()}`);
     if (r.ok) {
+      const cType = (r.headers.get('content-type') || '').toLowerCase();
+      if (!cType.includes('image/png') && !cType.includes('image/jpeg')) {
+        return;
+      }
       const blob = await r.blob();
+      if (!blob || blob.size === 0) return;
       const objUrl = URL.createObjectURL(blob);
       if (img.dataset.objUrl) {
         try { URL.revokeObjectURL(img.dataset.objUrl); } catch {}
@@ -3078,13 +3303,55 @@ async function loadLivePreview(id) {
     console.warn('[FLIQ] Live preview fetch notice:', err.message);
   }
 }
+
 function hydrateScreenshots(){
-  document.querySelectorAll('[data-screenshot]').forEach(async img=>{try{const r=await apiFetch(img.dataset.screenshot);if(r.ok)img.src=URL.createObjectURL(await r.blob())}catch{}});
-  document.querySelectorAll('[data-live-screenshot]').forEach(async img=>{
+  document.querySelectorAll('[data-screenshot]').forEach(async img => {
+    const url = img.dataset.screenshot;
+    if (!url) return;
+    const cached = screenshotMemoryCache.get(url);
+    if (cached && cached.objectUrl) {
+      if (img.src !== cached.objectUrl) {
+        img.src = cached.objectUrl;
+      }
+      img.classList.remove('screenshot-loading');
+      img.classList.add('screenshot-loaded');
+      return;
+    }
+    img.classList.add('screenshot-loading');
+    try {
+      const r = await apiFetch(url);
+      if (!r.ok) {
+        throw new Error(`HTTP ${r.status}`);
+      }
+      const cType = (r.headers.get('content-type') || '').toLowerCase();
+      if (!cType.includes('image/png') && !cType.includes('image/jpeg') && !cType.includes('image/webp')) {
+        throw new Error(`Non-image response: ${cType}`);
+      }
+      const blob = await r.blob();
+      if (!blob || blob.size === 0) throw new Error('Empty image payload');
+      const objUrl = URL.createObjectURL(blob);
+      screenshotMemoryCache.set(url, { objectUrl: objUrl, blob, contentType: cType, loadedAt: Date.now() });
+      img.src = objUrl;
+      img.classList.remove('screenshot-loading');
+      img.classList.add('screenshot-loaded');
+    } catch (err) {
+      console.warn('[FLIQ] Screenshot load note:', url, err.message);
+      img.classList.remove('screenshot-loading');
+      img.classList.add('screenshot-failed');
+      showScreenshotFallback(img);
+    }
+  });
+
+  document.querySelectorAll('[data-live-screenshot]').forEach(async img => {
     try {
       const r = await apiFetch(`${img.dataset.liveScreenshot}?t=${Date.now()}`);
       if (r.ok) {
+        const cType = (r.headers.get('content-type') || '').toLowerCase();
+        if (!cType.includes('image/png') && !cType.includes('image/jpeg')) {
+          return;
+        }
         const blob = await r.blob();
+        if (!blob || blob.size === 0) return;
         const objUrl = URL.createObjectURL(blob);
         if (img.dataset.objUrl) {
           try { URL.revokeObjectURL(img.dataset.objUrl); } catch {}
@@ -3427,11 +3694,17 @@ function subscribeLiveScan(id) {
         }
         try {
           const data = JSON.parse(e.data);
-          render();
-          if (data.status === 'completed' || data.status === 'failed') {
+          if (data.status === 'completed' || data.status === 'failed' || data.status === 'timed_out') {
+            clearActiveScanState();
+            if (data.entitlement) {
+              applyAuthoritativeEntitlement(data.entitlement, true);
+            } else {
+              fetchUserEntitlement(true).catch(() => {});
+            }
             sse.close();
             liveEventSource = null;
           }
+          render();
         } catch {}
       });
       sse.onerror = () => {
@@ -3458,9 +3731,14 @@ function startPollingFallback(id) {
       const r = await apiFetch(`/api/tests/${id}`);
       if (r.ok) {
         const t = await r.json();
-        if (t.status === 'completed' || t.status === 'failed') {
+        if (t.status === 'completed' || t.status === 'failed' || t.status === 'timed_out') {
           clearActiveScanState();
           clearInterval(testTimer);
+          if (t.entitlement) {
+            applyAuthoritativeEntitlement(t.entitlement, true);
+          } else {
+            fetchUserEntitlement(true).catch(() => {});
+          }
         } else {
           setActiveScanState(t.id, t.url, t.stage, t.progress, t.status);
         }
@@ -3679,6 +3957,14 @@ document.addEventListener('click',async e=>{
         loadLivePreview(testId);
       } else {
         render();
+      }
+      return;
+    }
+    if(action==='retry-test-url'){
+      e.preventDefault();
+      const targetUrl = a.dataset.url;
+      if (targetUrl) {
+        triggerPendingScan(targetUrl);
       }
       return;
     }
