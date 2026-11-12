@@ -205,7 +205,7 @@ const getFirebaseWebConfig = () => {
   const projectId = process.env.FIREBASE_PROJECT_ID?.trim() || '';
   return {
     apiKey: getWebApiKey(),
-    authDomain: process.env.FIREBASE_AUTH_DOMAIN?.trim() || (projectId ? `${projectId}.firebaseapp.com` : ''),
+    authDomain: process.env.FIREBASE_AUTH_DOMAIN?.trim() || 'auth.fliqai.site',
     projectId,
     messagingSenderId: process.env.FIREBASE_MESSAGING_SENDER_ID?.trim() || '',
     appId: process.env.FIREBASE_APP_ID?.trim() || ''
