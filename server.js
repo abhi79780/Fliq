@@ -387,6 +387,21 @@ const badIP = (ip) => {
   return true;
 };
 
+// Execute a task with an explicit per-phase deadline
+export function withDeadline(promise, timeoutMs, fallbackValue = null, label = 'operation') {
+  let timer;
+  const timeoutPromise = new Promise((resolve) => {
+    timer = setTimeout(() => {
+      console.warn(`[FLIQ] Deadline exceeded (${timeoutMs}ms) for ${label}, falling back gracefully.`);
+      resolve(fallbackValue);
+    }, timeoutMs);
+  });
+  return Promise.race([
+    promise.then(res => { clearTimeout(timer); return res; }),
+    timeoutPromise
+  ]);
+}
+
 export async function validateTarget(raw) {
   let u;
   try {
@@ -419,7 +434,14 @@ export async function validateTarget(raw) {
     return { url: u.toString(), hostname: host };
   }
 
-  const addresses = net.isIP(host) ? [{ address: host }] : await dns.lookup(host, { all: true, verbatim: true }).catch(() => []);
+  const addresses = net.isIP(host)
+    ? [{ address: host }]
+    : await withDeadline(
+        dns.lookup(host, { all: true, verbatim: true }).catch(() => []),
+        3500,
+        [],
+        `dns-lookup-${host}`
+      );
   if (!addresses.length) {
     targetValidationCache.set(host, { valid: false, error: 'Could not resolve domain name. Please check the website address.', timestamp: now });
     throw new Error('Could not resolve domain name. Please check the website address.');
@@ -510,21 +532,6 @@ async function generateAIReport(issues = [], targetUrl = '') {
   return await executeAIOrFallbackReport(issues, targetUrl);
 }
 
-// Execute a task with an explicit per-phase deadline
-function withDeadline(promise, timeoutMs, fallbackValue = null, label = 'operation') {
-  let timer;
-  const timeoutPromise = new Promise((resolve) => {
-    timer = setTimeout(() => {
-      console.warn(`[FLIQ] Deadline exceeded (${timeoutMs}ms) for ${label}, falling back gracefully.`);
-      resolve(fallbackValue);
-    }, timeoutMs);
-  });
-  return Promise.race([
-    promise.then(res => { clearTimeout(timer); return res; }),
-    timeoutPromise
-  ]);
-}
-
 async function executeTest(job) {
   let isTerminal = false;
   let terminalStatus = null; // 'completed' | 'failed' | 'timed_out'
@@ -580,8 +587,14 @@ async function executeTest(job) {
   let browser = null;
   let timeoutId = null;
 
-  // Wait for available scan worker concurrency slot BEFORE starting the 90s scan timer
+  const logDiagnostic = (operation, details = {}) => {
+    const elapsed = Date.now() - scanStartTime;
+    const remaining = getRemainingScanTime();
+    console.log(`[FLIQ Scan Diag] [${new Date().toISOString()}] job=${job.id} owner=${job.owner} elapsed=${elapsed}ms remaining=${remaining}ms op="${operation}" ${JSON.stringify(details)}`);
+  };
+
   await acquireScanSlot();
+  logDiagnostic('acquired_scan_slot');
 
   const scanStartTime = Date.now();
   const SCAN_MAX_DURATION_MS = 90000;
@@ -621,6 +634,7 @@ async function executeTest(job) {
     const { url } = await validateTarget(job.url);
     if (isTimedOut || isTerminal) return;
     await update({ status: 'running', progress: 10, stage: 'Initializing browser', currentUrl: job.url, issues: [] });
+    logDiagnostic('launching_browser');
     browser = await chromium.launch({
       headless: true,
       args: [
@@ -643,7 +657,9 @@ async function executeTest(job) {
         '--memory-pressure-off'
       ]
     });
+    logDiagnostic('browser_launched');
     const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
+    logDiagnostic('page_created');
     const liveScreenshotFile = `${job.id}-live.jpeg`;
     const liveScreenshotPath = path.join(dataDir, liveScreenshotFile);
 
@@ -684,9 +700,29 @@ async function executeTest(job) {
 
     // Apply the same public-address policy to every navigation and subresource, including redirects.
     await page.route('**/*', async route => {
-      const target = route.request().url();
-      if (target.startsWith('data:') || target.startsWith('blob:')) return route.continue();
-      try { await validateTarget(target); return route.continue(); } catch { return route.abort('blockedbyclient'); }
+      try {
+        const req = route.request();
+        const target = req.url();
+        if (target.startsWith('data:') || target.startsWith('blob:') || target.startsWith('about:') || target.startsWith('javascript:')) {
+          return route.continue().catch(() => {});
+        }
+        let parsed;
+        try { parsed = new URL(target); } catch { return route.abort('blockedbyclient').catch(() => {}); }
+        if (!['http:', 'https:'].includes(parsed.protocol)) {
+          return route.continue().catch(() => {});
+        }
+        const host = parsed.hostname.toLowerCase();
+        if (badIP(host) || host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal') || host === 'metadata.google.internal' || host === '169.254.169.254') {
+          return route.abort('blockedbyclient').catch(() => {});
+        }
+        // Only perform DNS lookup on navigation requests (for SSRF protection on redirects) or raw IP addresses
+        if (req.isNavigationRequest() || net.isIP(host)) {
+          await withDeadline(validateTarget(target), 3000, null, 'route-target-validation');
+        }
+        return route.continue().catch(() => {});
+      } catch (err) {
+        return route.abort('blockedbyclient').catch(() => {});
+      }
     });
 
     // Uncaught JavaScript runtime exceptions
@@ -755,20 +791,24 @@ async function executeTest(job) {
     });
 
     const started = Date.now();
+    logDiagnostic('navigation_started', { target: url });
     await update({ progress: 20, stage: 'Opening website', currentUrl: url });
     let response = null;
     let mainResponseHeaders = {};
     try {
       // Per-stage timeout: Page navigation capped at maximum 20 seconds
       response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
+      logDiagnostic('domcontentloaded_reached', { status: response?.status() });
       // Optional load state wait capped at maximum 5 seconds with graceful fallback
       try {
         await page.waitForLoadState('load', { timeout: 5000 });
+        logDiagnostic('load_state_reached');
       } catch {}
       if (response) {
         mainResponseHeaders = response.headers() || {};
       }
     } catch (e) {
+      logDiagnostic('navigation_failed', { error: e.message });
       issues.push({
         id: randomUUID(),
         ruleId: 'func-load-timeout',
@@ -795,11 +835,11 @@ async function executeTest(job) {
       });
     }
 
-    const title = await page.title().catch(() => '');
-    const finalUrl = page.url();
+    const title = await withDeadline(page.title(), 3000, '', 'page title retrieval');
+    const finalUrl = page.url() || url;
 
     // Extract precise W3C Navigation Timing API measurements
-    const navMetrics = await page.evaluate(() => {
+    const navMetrics = await withDeadline(page.evaluate(() => {
       try {
         const nav = performance.getEntriesByType('navigation')?.[0];
         if (!nav) return null;
@@ -811,13 +851,13 @@ async function executeTest(job) {
       } catch {
         return null;
       }
-    }).catch(() => null);
+    }), 3000, null, 'navigation metrics extraction');
 
     const domContentLoadedTime = navMetrics?.domContentLoadedMs || (Date.now() - started);
     const loadTime = navMetrics?.windowLoadMs || Math.max(domContentLoadedTime, Date.now() - started);
 
     // Reset scroll to top before live preview capture
-    await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
+    await withDeadline(page.evaluate(() => window.scrollTo(0, 0)), 2000, null, 'window scroll reset');
     await page.waitForTimeout(150);
 
     // Capture initial live preview screenshot
@@ -1518,7 +1558,8 @@ const server=http.createServer(async(req,res)=>{
     res.setHeader('access-control-allow-credentials', 'true');
     res.setHeader('vary', 'Origin');
   }
-  res.setHeader('access-control-allow-headers', 'content-type, authorization, x-fliq-test-uid');
+  const reqHeaders = req.headers['access-control-request-headers'];
+  res.setHeader('access-control-allow-headers', reqHeaders || 'content-type, authorization, accept, x-requested-with, x-fliq-test-uid, x-fliq-priority');
   res.setHeader('access-control-allow-methods', 'GET, POST, DELETE, OPTIONS');
   if (req.method === 'OPTIONS') {
     if (origin && !isOriginAllowed(origin)) {
@@ -1853,12 +1894,19 @@ const server=http.createServer(async(req,res)=>{
     const sseMatch = pathname.match(/^\/api\/tests\/([\w-]+)\/events$/);
     if (sseMatch && req.method === 'GET') {
       const testId = sseMatch[1];
-      res.writeHead(200, {
+      const origin = req.headers.origin;
+      const sseHeaders = {
         'content-type': 'text/event-stream',
         'cache-control': 'no-cache, no-transform',
         'connection': 'keep-alive',
         'x-accel-buffering': 'no'
-      });
+      };
+      if (origin && isOriginAllowed(origin)) {
+        sseHeaders['access-control-allow-origin'] = origin;
+        sseHeaders['access-control-allow-credentials'] = 'true';
+        sseHeaders['vary'] = 'Origin';
+      }
+      res.writeHead(200, sseHeaders);
       res.write(': connected\n\n');
 
       if (!sseSubscribers.has(testId)) {

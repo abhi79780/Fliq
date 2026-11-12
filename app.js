@@ -2037,9 +2037,14 @@ const CANONICAL_LIVE_STAGES = [
 async function progressPage(id, preloaded = null) {
   let t = preloaded;
   if (!t) {
-    const rr = await apiFetch(`/api/tests/${id}`);
-    const text = await rr.text();
-    try { t = JSON.parse(text); } catch { t = { error: 'Could not contact the FLIQ API server.' }; }
+    try {
+      const rr = await apiFetch(`/api/tests/${id}`);
+      const text = await rr.text();
+      try { t = JSON.parse(text); } catch { t = { error: 'Could not contact the FLIQ API server.' }; }
+    } catch (fetchErr) {
+      console.warn('[FLIQ] progressPage apiFetch note:', fetchErr.message);
+      t = { error: 'Could not contact the FLIQ API server. Please check your connection and retry.' };
+    }
   }
   if (t.error) return appShell(`<div class="empty"><h2>${esc(t.error)}</h2><a href="/dashboard" data-route>Return to dashboard</a></div>`);
   if (t.status === 'completed') {
@@ -2820,9 +2825,14 @@ function coverageTabContent(t) {
 async function resultPage(id, preloaded = null){
   let t = preloaded;
   if (!t) {
-    const rr = await apiFetch(`/api/tests/${id}`);
-    const text = await rr.text();
-    try { t = JSON.parse(text); } catch { t = { error: 'Could not contact the FLIQ API server.' }; }
+    try {
+      const rr = await apiFetch(`/api/tests/${id}`);
+      const text = await rr.text();
+      try { t = JSON.parse(text); } catch { t = { error: 'Could not contact the FLIQ API server.' }; }
+    } catch (fetchErr) {
+      console.warn('[FLIQ] resultPage apiFetch note:', fetchErr.message);
+      t = { error: 'Could not contact the FLIQ API server. Please check your connection and retry.' };
+    }
   }
   if (t.error) return appShell(`<div class="empty"><h2>${esc(t.error)}</h2><a href="/dashboard" data-route>Return to dashboard</a></div>`);
   if (t.status !== 'completed') return progressPage(id, t);
@@ -3958,7 +3968,7 @@ function render(){
       }).catch(err=>{
         console.error('[FLIQ] Render error:',err);
         const el=$('#app');
-        if(el) el.innerHTML=appShell(`<div class="empty"><h2>Unable to load page</h2><p>${esc(err.message)}</p><a href="/dashboard" data-route>Return to dashboard</a></div>`);
+        if(el) el.innerHTML=appShell(`<div class="empty"><h2>Unable to load page</h2><p style="color:#716c65;margin:8px 0 16px">${esc(err.message || 'The server could not be reached.')}</p><div style="display:flex;gap:10px;justify-content:center"><button class="btn black" onclick="location.reload()">Retry connection ↺</button><a href="/dashboard" class="btn outline" data-route>Return to dashboard</a></div></div>`);
       });
     }else{
       $('#app').innerHTML=out;
