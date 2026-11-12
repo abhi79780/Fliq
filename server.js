@@ -1476,6 +1476,14 @@ export function isOriginAllowed(origin, allowedOriginsEnv = process.env.FLIQ_ALL
   if (!origin) return false;
   const o = origin.toLowerCase().trim();
 
+  // Always allow production FLIQ domain and its subdomains
+  try {
+    const u = new URL(o);
+    if (u.hostname === 'fliqai.site' || u.hostname.endsWith('.fliqai.site')) {
+      return true;
+    }
+  } catch {}
+
   // Allow localhost & loopback ONLY in non-production for local development and tests
   if (process.env.NODE_ENV !== 'production') {
     if (o.startsWith('http://localhost:') || o.startsWith('http://127.0.0.1:') || o === 'http://localhost' || o === 'http://127.0.0.1') {

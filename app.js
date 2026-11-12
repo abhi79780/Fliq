@@ -363,7 +363,14 @@ function getApiBase() {
   const candidate = (window.__FLIQ_API_URL__ || window.__FLIQ_FIREBASE_CONFIG__?.apiUrl || '').trim();
   if (candidate) return candidate.replace(/\/+$/, '');
   const host = (window.location?.hostname || '').toLowerCase();
-  if (host.endsWith('.pages.dev') || host.endsWith('.vercel.app') || host.endsWith('.netlify.app')) {
+  // Production custom domains and preview hosting domains
+  if (
+    host === 'fliqai.site' ||
+    host === 'www.fliqai.site' ||
+    host.endsWith('.pages.dev') ||
+    host.endsWith('.vercel.app') ||
+    host.endsWith('.netlify.app')
+  ) {
     return 'https://fliq-ezaz.onrender.com';
   }
   return '';
