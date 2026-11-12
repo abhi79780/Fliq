@@ -357,7 +357,7 @@ console.log('[FLIQ] signInWithOAuth: authenticated successfully — currentUser=
 await navigatePostAuth();
 }catch(error){
 console.error('[FLIQ] Google sign-in failed:',error?.code,error?.message,error);const isSelfDescribing=error.message?.startsWith('Firebase Web Authentication')||error.message?.startsWith('Firebase Web App');const friendly=friendlyFirebaseAuthError(error);
-const hasMapping=friendly!=='Firebase could not complete the request. Check your details and try again.';message.textContent=isSelfDescribing?error.message:(hasMapping?friendly:`${friendly} (${error?.code||error?.message||'unknown error'})`);buttons.forEach(x=>x.disabled=false);}}function isProtected(p){if(p==='/dashboard'||p==='/onboarding'||p==='/checkout'||p.startsWith('/checkout/'))return true;if(p.startsWith('/dashboard/tests/'))return false;return p.startsWith('/dashboard/');}
+const hasMapping=friendly!=='Firebase could not complete the request. Check your details and try again.';message.textContent=isSelfDescribing?error.message:(hasMapping?friendly:`${friendly} (${error?.code||error?.message||'unknown error'})`);buttons.forEach(x=>x.disabled=false);}}const isProtected = (p) => { if(p==='/dashboard'||p==='/onboarding'||p==='/checkout'||p.startsWith('/checkout/'))return true;if(p.startsWith('/dashboard/tests/'))return false;return p.startsWith('/dashboard/'); };
 function getApiBase() {
   if (typeof window === 'undefined') return '';
   const candidate = (window.__FLIQ_API_URL__ || window.__FLIQ_FIREBASE_CONFIG__?.apiUrl || '').trim();

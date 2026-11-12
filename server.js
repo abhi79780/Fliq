@@ -326,6 +326,16 @@ async function reconcileStaleJobs(maxAgeMs = 180000) {
         job.error = job.error || (maxAgeMs === 0 ? 'Test was interrupted by a server restart.' : 'Test timed out before completion.');
         job.completedAt = job.completedAt || new Date().toISOString();
         changed = true;
+
+        // Automatically refund scan quota for tests interrupted by server restart or stale timeouts
+        if (job.owner) {
+          try {
+            await refundScanUsage(job.owner, { db: cloud(), localDataDir: dataDir });
+          } catch (refErr) {
+            console.warn('[FLIQ] Notice refunding interrupted job quota:', refErr.message);
+          }
+        }
+
         if (adminApp && cloud() && job.owner !== 'local' && !String(job.owner).startsWith('anon:')) {
           try {
             await cloud().collection('tests').doc(job.id).set({
@@ -398,15 +408,33 @@ export async function validateTarget(raw) {
   ) {
     throw new Error('This address is not publicly reachable.');
   }
+
+  // Check TTL-bounded hostname resolution cache
+  const cached = targetValidationCache.get(host);
+  const now = Date.now();
+  if (cached && now - cached.timestamp < 60000) {
+    if (!cached.valid) {
+      throw new Error(cached.error || 'Restricted target.');
+    }
+    return { url: u.toString(), hostname: host };
+  }
+
   const addresses = net.isIP(host) ? [{ address: host }] : await dns.lookup(host, { all: true, verbatim: true }).catch(() => []);
   if (!addresses.length) {
+    targetValidationCache.set(host, { valid: false, error: 'Could not resolve domain name. Please check the website address.', timestamp: now });
     throw new Error('Could not resolve domain name. Please check the website address.');
   }
   if (addresses.some(x => badIP(x.address))) {
+    targetValidationCache.set(host, { valid: false, error: 'This website resolves to a restricted network address.', timestamp: now });
     throw new Error('This website resolves to a restricted network address.');
   }
+
+  targetValidationCache.set(host, { valid: true, timestamp: now });
   return { url: u.toString(), hostname: host };
 }
+
+// In-memory DNS validation cache to prevent redundant lookups during scan subresource interception
+const targetValidationCache = new Map();
 
 // SSE Subscriber Registry & Scan Concurrency Semaphore
 const sseSubscribers = new Map(); // testId -> Set<ServerResponse>
@@ -440,12 +468,31 @@ const MAX_CONCURRENT_SCANS = parseConcurrentScans();
 let activeScanCount = 0;
 const scanWaitQueue = [];
 
-function acquireScanSlot() {
+function acquireScanSlot(maxWaitMs = 60000) {
   if (activeScanCount < MAX_CONCURRENT_SCANS) {
     activeScanCount++;
     return Promise.resolve();
   }
-  return new Promise(resolve => scanWaitQueue.push(resolve));
+  return new Promise((resolve, reject) => {
+    let timer = null;
+    const item = {
+      resolve: () => {
+        if (timer) clearTimeout(timer);
+        resolve();
+      }
+    };
+    timer = setTimeout(() => {
+      const idx = scanWaitQueue.indexOf(item);
+      if (idx !== -1) {
+        scanWaitQueue.splice(idx, 1);
+      }
+      const err = new Error('Scan concurrency queue timeout exceeded. Server is busy processing active tests.');
+      err.status = 503;
+      err.code = 'QUEUE_TIMEOUT';
+      reject(err);
+    }, maxWaitMs);
+    scanWaitQueue.push(item);
+  });
 }
 
 function releaseScanSlot() {
@@ -453,7 +500,9 @@ function releaseScanSlot() {
   if (scanWaitQueue.length > 0) {
     activeScanCount++;
     const next = scanWaitQueue.shift();
-    next();
+    if (next && next.resolve) {
+      next.resolve();
+    }
   }
 }
 
@@ -461,11 +510,37 @@ async function generateAIReport(issues = [], targetUrl = '') {
   return await executeAIOrFallbackReport(issues, targetUrl);
 }
 
+// Execute a task with an explicit per-phase deadline
+function withDeadline(promise, timeoutMs, fallbackValue = null, label = 'operation') {
+  let timer;
+  const timeoutPromise = new Promise((resolve) => {
+    timer = setTimeout(() => {
+      console.warn(`[FLIQ] Deadline exceeded (${timeoutMs}ms) for ${label}, falling back gracefully.`);
+      resolve(fallbackValue);
+    }, timeoutMs);
+  });
+  return Promise.race([
+    promise.then(res => { clearTimeout(timer); return res; }),
+    timeoutPromise
+  ]);
+}
+
 async function executeTest(job) {
   let isTerminal = false;
   let terminalStatus = null; // 'completed' | 'failed' | 'timed_out'
   let isTimedOut = false;
+  let quotaRefunded = false;
   const issues = [];
+
+  const safeRefundQuotaOnce = async () => {
+    if (quotaRefunded) return;
+    quotaRefunded = true;
+    try {
+      await refundScanUsage(job.owner, { db: cloud(), localDataDir: dataDir });
+    } catch (refErr) {
+      console.warn('[FLIQ] Scan usage refund warning:', refErr.message);
+    }
+  };
 
   const update = async (fields) => {
     // If a terminal status has already been reached, reject any conflicting status updates.
@@ -503,7 +578,19 @@ async function executeTest(job) {
   };
 
   let browser = null;
-  const timeoutId = setTimeout(async () => {
+  let timeoutId = null;
+
+  // Wait for available scan worker concurrency slot BEFORE starting the 90s scan timer
+  await acquireScanSlot();
+
+  const scanStartTime = Date.now();
+  const SCAN_MAX_DURATION_MS = 90000;
+
+  function getRemainingScanTime() {
+    return Math.max(0, SCAN_MAX_DURATION_MS - (Date.now() - scanStartTime));
+  }
+
+  timeoutId = setTimeout(async () => {
     if (isTerminal) return;
     isTimedOut = true;
     try {
@@ -512,9 +599,7 @@ async function executeTest(job) {
         browser = null;
       }
     } catch {}
-    try {
-      await refundScanUsage(job.owner, { db: cloud(), localDataDir: dataDir });
-    } catch {}
+    await safeRefundQuotaOnce();
     let latestEntitlement = null;
     try {
       latestEntitlement = await getUserEntitlement(job.owner, { db: cloud(), localDataDir: dataDir });
@@ -528,9 +613,8 @@ async function executeTest(job) {
       issues: issues.length ? issues : [],
       entitlement: latestEntitlement
     });
-  }, 90000);
+  }, SCAN_MAX_DURATION_MS);
 
-  await acquireScanSlot();
   try {
     if (isTimedOut || isTerminal) return;
     const { chromium } = await import('playwright');
@@ -791,7 +875,12 @@ async function executeTest(job) {
     let accessibilityCount = 0;
     let accessibilityReport = null;
     try {
-      const a11yScan = await page.evaluate(evaluateAccessibility, finalUrl);
+      const a11yScan = await withDeadline(
+        page.evaluate(evaluateAccessibility, finalUrl),
+        Math.min(15000, Math.max(3000, getRemainingScanTime() - 25000)),
+        { findings: [] },
+        'accessibility scan'
+      );
       for (const f of a11yScan.findings || []) {
         issues.push({ id: randomUUID(), ...f });
       }
@@ -828,7 +917,12 @@ async function executeTest(job) {
 
       // Native browser-level keyboard navigation audit (Playwright CDP)
       try {
-        const kbAudit = await auditNativeKeyboardNavigation(page, finalUrl);
+        const kbAudit = await withDeadline(
+          auditNativeKeyboardNavigation(page, finalUrl),
+          Math.min(5000, Math.max(1500, getRemainingScanTime() - 25000)),
+          { findings: [] },
+          'keyboard navigation'
+        );
         for (const f of kbAudit.findings || []) {
           issues.push({ id: randomUUID(), ...f });
         }
@@ -938,12 +1032,22 @@ async function executeTest(job) {
 
     let formsData = { formsCount: 0, forms: [], tested: false };
     try {
-      formsData = await page.evaluate(inspectFormsPassive, finalUrl);
+      formsData = await withDeadline(
+        page.evaluate(inspectFormsPassive, finalUrl),
+        Math.min(5000, Math.max(1500, getRemainingScanTime() - 20000)),
+        { formsCount: 0, forms: [], tested: false },
+        'passive forms inspection'
+      );
     } catch {}
 
     try {
-      const deadTriggers = await page.evaluate(checkDeadTriggers, finalUrl);
-      for (const f of deadTriggers.findings || []) {
+      const deadTriggers = await withDeadline(
+        page.evaluate(checkDeadTriggers, finalUrl),
+        Math.min(5000, Math.max(1500, getRemainingScanTime() - 20000)),
+        { findings: [] },
+        'dead triggers check'
+      );
+      for (const f of deadTriggers?.findings || []) {
         issues.push({ id: randomUUID(), ...f });
       }
     } catch {}
@@ -955,12 +1059,17 @@ async function executeTest(job) {
     await update({ progress: 65, stage: 'Measuring performance', currentUrl: finalUrl });
     let performanceReport = null;
     try {
-      const perfScan = await page.evaluate(extractPerformanceMetrics, finalUrl);
-      for (const f of perfScan.findings || []) {
+      const perfScan = await withDeadline(
+        page.evaluate(extractPerformanceMetrics, finalUrl),
+        Math.min(10000, Math.max(2000, getRemainingScanTime() - 15000)),
+        { findings: [], metrics: {} },
+        'performance metrics scan'
+      );
+      for (const f of perfScan?.findings || []) {
         issues.push({ id: randomUUID(), ...f });
       }
-      const perfFindings = perfScan.findings || [];
-      const m = perfScan.metrics || {};
+      const perfFindings = perfScan?.findings || [];
+      const m = perfScan?.metrics || {};
       performanceReport = {
         metrics: m,
         checks: PERF_CHECKS.map(chk => {
@@ -985,8 +1094,13 @@ async function executeTest(job) {
     await update({ progress: 75, stage: 'Checking SEO', currentUrl: finalUrl });
     let seoReport = null;
     try {
-      const seoScan = await page.evaluate(evaluateSEO, finalUrl);
-      for (const f of seoScan.findings || []) {
+      const seoScan = await withDeadline(
+        page.evaluate(evaluateSEO, finalUrl),
+        Math.min(10000, Math.max(2000, getRemainingScanTime() - 15000)),
+        { findings: [], summary: {} },
+        'SEO scan'
+      );
+      for (const f of seoScan?.findings || []) {
         issues.push({ id: randomUUID(), ...f });
       }
       const SEO_RULE_MAPPING = {
@@ -1000,24 +1114,24 @@ async function executeTest(job) {
         'image-alt-coverage': ['seo-image-alt-missing']
       };
       seoReport = {
-        summary: seoScan.summary || {},
+        summary: seoScan?.summary || {},
         checks: SEO_CHECKS.map(chk => {
           const targetRules = SEO_RULE_MAPPING[chk.id] || [chk.id];
-          const matching = (seoScan.findings || []).filter(f => targetRules.some(r => f.ruleId === r || f.ruleId.includes(r)));
+          const matching = (seoScan?.findings || []).filter(f => targetRules.some(r => f.ruleId === r || f.ruleId.includes(r)));
           const status = mapCheckStatus(chk, matching);
           let evidence = chk.summary;
           if (chk.id === 'canonical-url') {
-            evidence = seoScan.summary?.canonical
+            evidence = seoScan?.summary?.canonical
               ? `Declared canonical URL: <link rel="canonical" href="${seoScan.summary.canonical}">`
               : 'No <link rel="canonical"> tag found (Informational observation).';
           } else if (chk.id === 'heading-h1') {
-            evidence = (seoScan.summary?.h1Count === 1)
+            evidence = (seoScan?.summary?.h1Count === 1)
               ? 'Primary <h1> topic heading is present.'
-              : (seoScan.summary?.h1Count === 0)
+              : (seoScan?.summary?.h1Count === 0)
                 ? 'Missing primary <h1> topic heading (Potential Issue).'
-                : `${seoScan.summary?.h1Count} <h1> headings found (Recommended: exactly 1).`;
+                : `${seoScan?.summary?.h1Count} <h1> headings found (Recommended: exactly 1).`;
           } else if (chk.id === 'page-title') {
-            evidence = (seoScan.summary?.titleLength > 0)
+            evidence = (seoScan?.summary?.titleLength > 0)
               ? `Document title present: "${seoScan.summary.title}" (${seoScan.summary.titleLength} chars).`
               : 'Document title (<title>) tag is missing or empty.';
           } else if (matching.length > 0 && matching[0].evidence) {
@@ -1039,11 +1153,16 @@ async function executeTest(job) {
       for (const f of headerSec.findings || []) {
         issues.push({ id: randomUUID(), ...f });
       }
-      const domSec = await page.evaluate(evaluateDOMSecurity, finalUrl);
-      for (const f of domSec.findings || []) {
+      const domSec = await withDeadline(
+        page.evaluate(evaluateDOMSecurity, finalUrl),
+        Math.min(8000, Math.max(2000, getRemainingScanTime() - 10000)),
+        { findings: [] },
+        'DOM security scan'
+      );
+      for (const f of domSec?.findings || []) {
         issues.push({ id: randomUUID(), ...f });
       }
-      const allSecFindings = [...headerSec.findings, ...domSec.findings];
+      const allSecFindings = [...(headerSec.findings || []), ...(domSec?.findings || [])];
       const SEC_RULE_MAPPING = {
         'sec-https': ['sec-https-missing'],
         'sec-hsts': ['sec-hsts-missing'],
@@ -1097,14 +1216,24 @@ async function executeTest(job) {
     let discoveredLinks = [];
     try {
       const targetOrigin = new URL(finalUrl).origin;
-      discoveredLinks = await page.evaluate(extractDiscoveredLinks, targetOrigin);
+      discoveredLinks = await withDeadline(
+        page.evaluate(extractDiscoveredLinks, targetOrigin),
+        4000,
+        [],
+        'link discovery'
+      );
     } catch (linkErr) {
       console.warn('[FLIQ] Link discovery non-fatal warning:', linkErr.message);
     }
 
     let robotsInfo = { exists: false, status: 0, disallowedPaths: [] };
     try {
-      robotsInfo = await checkRobotsTxt(new URL(finalUrl).origin);
+      robotsInfo = await withDeadline(
+        checkRobotsTxt(new URL(finalUrl).origin),
+        3000,
+        { exists: false, status: 0, disallowedPaths: [] },
+        'robots.txt check'
+      );
     } catch {}
 
     // Resilient Viewport Capture (Desktop, Tablet, Mobile)
@@ -1123,33 +1252,53 @@ async function executeTest(job) {
       console.warn('[FLIQ] Desktop screenshot non-fatal warning:', dErr.message);
     }
 
-    try {
-      await page.setViewportSize({ width: 768, height: 1024 });
-      await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
-      await page.waitForTimeout(100);
-      await page.screenshot({ path: tablet, fullPage: false, timeout: 5000 });
-      const tabletOverflow = await page.evaluate(checkResponsiveLayout, finalUrl).catch(() => null);
-      for (const f of tabletOverflow?.findings || []) {
-        f.title = `[Tablet] ${f.title}`;
-        issues.push({ id: randomUUID(), ...f });
+    // Capture tablet viewport if time permits
+    if (getRemainingScanTime() > 10000) {
+      try {
+        await page.setViewportSize({ width: 768, height: 1024 });
+        await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
+        await page.waitForTimeout(100);
+        await page.screenshot({ path: tablet, fullPage: false, timeout: 5000 });
+        const tabletOverflow = await withDeadline(
+          page.evaluate(checkResponsiveLayout, finalUrl),
+          4000,
+          null,
+          'tablet responsive layout check'
+        );
+        for (const f of tabletOverflow?.findings || []) {
+          f.title = `[Tablet] ${f.title}`;
+          issues.push({ id: randomUUID(), ...f });
+        }
+      } catch (tErr) {
+        console.warn('[FLIQ] Tablet capture non-fatal warning:', tErr.message);
+        try { await fs.copyFile(desktop, tablet); } catch {}
       }
-    } catch (tErr) {
-      console.warn('[FLIQ] Tablet capture non-fatal warning:', tErr.message);
+    } else {
       try { await fs.copyFile(desktop, tablet); } catch {}
     }
 
-    try {
-      await page.setViewportSize({ width: 390, height: 844 });
-      await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
-      await page.waitForTimeout(100);
-      await page.screenshot({ path: mobile, fullPage: false, timeout: 5000 });
-      const mobileOverflow = await page.evaluate(checkResponsiveLayout, finalUrl).catch(() => null);
-      for (const f of mobileOverflow?.findings || []) {
-        f.title = `[Mobile] ${f.title}`;
-        issues.push({ id: randomUUID(), ...f });
+    // Capture mobile viewport if time permits
+    if (getRemainingScanTime() > 8000) {
+      try {
+        await page.setViewportSize({ width: 390, height: 844 });
+        await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
+        await page.waitForTimeout(100);
+        await page.screenshot({ path: mobile, fullPage: false, timeout: 5000 });
+        const mobileOverflow = await withDeadline(
+          page.evaluate(checkResponsiveLayout, finalUrl),
+          4000,
+          null,
+          'mobile responsive layout check'
+        );
+        for (const f of mobileOverflow?.findings || []) {
+          f.title = `[Mobile] ${f.title}`;
+          issues.push({ id: randomUUID(), ...f });
+        }
+      } catch (mErr) {
+        console.warn('[FLIQ] Mobile capture non-fatal warning:', mErr.message);
+        try { await fs.copyFile(desktop, mobile); } catch {}
       }
-    } catch (mErr) {
-      console.warn('[FLIQ] Mobile capture non-fatal warning:', mErr.message);
+    } else {
       try { await fs.copyFile(desktop, mobile); } catch {}
     }
 
@@ -1169,10 +1318,22 @@ async function executeTest(job) {
     let finalIssues = issues;
     let isAiGenerated = false;
     try {
-      const aiResult = await generateAIReport(issues, finalUrl || job.url);
-      aiSummary = aiResult.aiSummary || aiSummary;
-      finalIssues = aiResult.issues || issues;
-      isAiGenerated = Boolean(aiResult.isAiGenerated);
+      const aiResult = await withDeadline(
+        generateAIReport(issues, finalUrl || job.url),
+        10000,
+        null,
+        'AI/deterministic report generation'
+      );
+      if (aiResult) {
+        aiSummary = aiResult.aiSummary || aiSummary;
+        finalIssues = aiResult.issues || issues;
+        isAiGenerated = Boolean(aiResult.isAiGenerated);
+      } else {
+        const fallback = generateDeterministicSummary(issues, finalUrl || job.url);
+        aiSummary = fallback.aiSummary;
+        finalIssues = fallback.issues;
+        isAiGenerated = false;
+      }
     } catch (aiErr) {
       console.error('[FLIQ] generateAIReport non-fatal error:', aiErr.message);
       const fallback = generateDeterministicSummary(issues, finalUrl || job.url);
@@ -1282,12 +1443,8 @@ async function executeTest(job) {
       message = 'Scan memory limit exceeded or browser process crashed. Please retry with a lighter target page or restart the worker.';
     }
 
-    // Refund scan usage so failed scans do not consume scan quota
-    try {
-      await refundScanUsage(job.owner, { db: cloud(), localDataDir: dataDir });
-    } catch (refErr) {
-      console.warn('[FLIQ] Scan usage refund error:', refErr.message);
-    }
+    // Refund scan usage once so failed scans do not consume scan quota
+    await safeRefundQuotaOnce();
     let latestEntitlement = null;
     try {
       latestEntitlement = await getUserEntitlement(job.owner, { db: cloud(), localDataDir: dataDir });
@@ -1303,7 +1460,10 @@ async function executeTest(job) {
       entitlement: latestEntitlement
     });
   } finally {
-    clearTimeout(timeoutId);
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      timeoutId = null;
+    }
     if (browser) {
       await browser.close().catch(() => {});
       browser = null;
