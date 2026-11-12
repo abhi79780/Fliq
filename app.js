@@ -3923,7 +3923,7 @@ function render(){
     else if(path==='/docs') out=docs();
     else if(path==='/blog') out=blog();
     else if(path==='/demo') out=demo();
-    else if(path==='/privacy-policy') out=privacyPolicy();
+    else if(path==='/privacy-policy'||path==='/privacy') out=privacyPolicy();
     else if(path==='/terms-of-service') out=termsOfService();
     else if(path==='/refund-policy') out=refundPolicy();
     else if(path==='/about') out=aboutPage();
@@ -4605,6 +4605,7 @@ document.addEventListener('focusin',e=>{const wrap=document.querySelector('.prod
 new MutationObserver(()=>{if(shareModalId&&location.pathname===`/dashboard/tests/${shareModalId}`&&!document.querySelector('.share-modal'))$('#app').insertAdjacentHTML('beforeend',shareDialog(shareModalId));}).observe($('#app'),{childList:true});
 render();
 startGlobalScanTracker();
+
 
 
 
