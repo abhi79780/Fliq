@@ -20,6 +20,7 @@
     "test:entitlements": "node --test tests/entitlements.test.mjs",
     "test:usage": "node --test tests/realtime-usage.test.mjs",
     "test:lifecycle": "node --test tests/scan-lifecycle.test.mjs",
+    "test:queue": "node --test tests/scan-queue-reliability.test.mjs",
     "test:screenshots": "node --test tests/screenshots.test.mjs",
     "test:responsive": "node --test tests/checkout-responsive.test.mjs",
     "test:e2e": "node --test tests/e2e.test.js",

@@ -262,6 +262,13 @@ async function verifiedUser(req, options = {}) {
       if (m && m[1]) token = m[1].trim();
     }
   }
+  if (!token) {
+    try {
+      const u = new URL(req.url, 'http://localhost');
+      const qToken = u.searchParams.get('token') || u.searchParams.get('auth');
+      if (qToken) token = qToken.trim();
+    } catch {}
+  }
   if (!adminApp) {
     if (token) {
       try {
@@ -312,7 +319,7 @@ const mime = { '.html':'text/html; charset=utf-8', '.css':'text/css; charset=utf
 const send = (res, status, data) => { res.writeHead(status, { 'content-type':'application/json', 'cache-control':'no-store' }); res.end(JSON.stringify(data)); };
 const readDB = async () => { try { return JSON.parse(await fs.readFile(dbFile, 'utf8')); } catch { return []; } };
 const saveDB = async (data) => fs.writeFile(dbFile, JSON.stringify(data, null, 2));
-async function reconcileStaleJobs(maxAgeMs = 180000) {
+async function reconcileStaleJobs(maxAgeMs = 80000) {
   const now = Date.now();
   const db = await readDB();
   let changed = false;
@@ -326,6 +333,9 @@ async function reconcileStaleJobs(maxAgeMs = 180000) {
         job.error = job.error || (maxAgeMs === 0 ? 'Test was interrupted by a server restart.' : 'Test timed out before completion.');
         job.completedAt = job.completedAt || new Date().toISOString();
         changed = true;
+        if (typeof releaseScanSlot === 'function') {
+          try { releaseScanSlot(job.id); } catch {}
+        }
 
         // Automatically refund scan quota for tests interrupted by server restart or stale timeouts
         if (job.owner) {
@@ -397,7 +407,9 @@ export function withDeadline(promise, timeoutMs, fallbackValue = null, label = '
     }, timeoutMs);
   });
   return Promise.race([
-    promise.then(res => { clearTimeout(timer); return res; }),
+    Promise.resolve(promise)
+      .then(res => { clearTimeout(timer); return res; })
+      .catch(err => { clearTimeout(timer); throw err; }),
     timeoutPromise
   ]);
 }
@@ -488,21 +500,47 @@ export function parseConcurrentScans(envVal = process.env.FLIQ_CONCURRENT_SCANS,
 
 const MAX_CONCURRENT_SCANS = parseConcurrentScans();
 let activeScanCount = 0;
-const scanWaitQueue = [];
+const activeScanJobs = new Map(); // jobId -> acquiredAt
+const scanWaitQueue = []; // [{ jobId, resolve, timer }]
 
-function acquireScanSlot(maxWaitMs = 60000) {
+export function getQueueStatus() {
+  return {
+    activeScans: activeScanCount,
+    waitingScans: scanWaitQueue.length,
+    maxConcurrent: MAX_CONCURRENT_SCANS,
+    activeJobIds: Array.from(activeScanJobs.keys())
+  };
+}
+
+export function acquireScanSlot(jobId = 'unknown', maxWaitMs = 45000) {
   if (activeScanCount < MAX_CONCURRENT_SCANS) {
     activeScanCount++;
-    return Promise.resolve();
+    activeScanJobs.set(jobId, Date.now());
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      releaseScanSlot(jobId);
+    };
+    return Promise.resolve(release);
   }
+
   return new Promise((resolve, reject) => {
     let timer = null;
+    let released = false;
     const item = {
+      jobId,
       resolve: () => {
         if (timer) clearTimeout(timer);
-        resolve();
+        const release = () => {
+          if (released) return;
+          released = true;
+          releaseScanSlot(jobId);
+        };
+        resolve(release);
       }
     };
+
     timer = setTimeout(() => {
       const idx = scanWaitQueue.indexOf(item);
       if (idx !== -1) {
@@ -513,17 +551,25 @@ function acquireScanSlot(maxWaitMs = 60000) {
       err.code = 'QUEUE_TIMEOUT';
       reject(err);
     }, maxWaitMs);
+
     scanWaitQueue.push(item);
   });
 }
 
-function releaseScanSlot() {
+export function releaseScanSlot(jobId = 'unknown') {
+  if (jobId !== 'unknown' && !activeScanJobs.has(jobId)) {
+    return;
+  }
+  activeScanJobs.delete(jobId);
   activeScanCount = Math.max(0, activeScanCount - 1);
   if (scanWaitQueue.length > 0) {
     activeScanCount++;
     const next = scanWaitQueue.shift();
-    if (next && next.resolve) {
-      next.resolve();
+    if (next) {
+      activeScanJobs.set(next.jobId, Date.now());
+      if (next.resolve) {
+        next.resolve();
+      }
     }
   }
 }
@@ -532,12 +578,63 @@ async function generateAIReport(issues = [], targetUrl = '') {
   return await executeAIOrFallbackReport(issues, targetUrl);
 }
 
+let sharedBrowserInstance = null;
+let sharedBrowserLaunchPromise = null;
+let sharedBrowserRunCount = 0;
+
+export async function getSharedBrowser() {
+  if (sharedBrowserInstance && sharedBrowserInstance.isConnected()) {
+    sharedBrowserRunCount++;
+    // Periodically recycle browser after 25 scans to maintain pristine memory on low-RAM containers
+    if (sharedBrowserRunCount <= 25) {
+      return sharedBrowserInstance;
+    }
+    try { await sharedBrowserInstance.close().catch(() => {}); } catch {}
+    sharedBrowserInstance = null;
+    sharedBrowserRunCount = 0;
+  }
+  if (sharedBrowserLaunchPromise) {
+    return await sharedBrowserLaunchPromise;
+  }
+  const { chromium } = await import('playwright');
+  sharedBrowserLaunchPromise = (async () => {
+    try {
+      const b = await chromium.launch({
+        headless: true,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-gpu',
+          '--no-first-run'
+        ]
+      });
+      b.on('disconnected', () => {
+        sharedBrowserInstance = null;
+        sharedBrowserRunCount = 0;
+      });
+      sharedBrowserInstance = b;
+      sharedBrowserRunCount = 1;
+      return b;
+    } finally {
+      sharedBrowserLaunchPromise = null;
+    }
+  })();
+  return await sharedBrowserLaunchPromise;
+}
+
 async function executeTest(job) {
   let isTerminal = false;
   let terminalStatus = null; // 'completed' | 'failed' | 'timed_out'
   let isTimedOut = false;
   let quotaRefunded = false;
+  let releaseSlot = null;
+  let timeoutId = null;
+  let browser = null;
+  let context = null;
+  let page = null;
   const issues = [];
+  const scanStartTime = Date.now();
 
   const safeRefundQuotaOnce = async () => {
     if (quotaRefunded) return;
@@ -545,14 +642,14 @@ async function executeTest(job) {
     try {
       await refundScanUsage(job.owner, { db: cloud(), localDataDir: dataDir });
     } catch (refErr) {
-      console.warn('[FLIQ] Scan usage refund warning:', refErr.message);
+      console.warn(`[FLIQ SCAN: ${job.id}] Scan usage refund notice:`, refErr.message);
     }
   };
 
   const update = async (fields) => {
     // If a terminal status has already been reached, reject any conflicting status updates.
     if (isTerminal && fields.status && fields.status !== terminalStatus) {
-      console.warn(`[FLIQ] Discarding state change to "${fields.status}" for test ${job.id} because test already reached terminal status "${terminalStatus}".`);
+      console.warn(`[FLIQ SCAN: ${job.id}] Discarding state change to "${fields.status}" because test already reached terminal status "${terminalStatus}".`);
       return;
     }
     if (fields.status === 'completed' || fields.status === 'failed' || fields.status === 'timed_out') {
@@ -576,16 +673,26 @@ async function executeTest(job) {
           const sanitized = sanitizeReportForPersistence(fields);
           await cloud().collection('tests').doc(job.id).set(sanitized, { merge: true });
         } catch (fsErr) {
-          console.error('[FLIQ] Firestore test update error:', fsErr.message);
+          console.error(`[FLIQ SCAN: ${job.id}] Firestore test update error:`, fsErr.message);
         }
       }
     } catch (upErr) {
-      console.error('[FLIQ] Update test error:', upErr.message);
+      console.error(`[FLIQ SCAN: ${job.id}] Update test error:`, upErr.message);
     }
   };
 
-  let browser = null;
-  let timeoutId = null;
+  const SCAN_MAX_DURATION_MS = 75000;
+  const timings = {
+    queueWaitMs: 0,
+    browserInitMs: 0,
+    navMs: 0,
+    screenshotMs: 0,
+    totalScanDurationMs: 0
+  };
+
+  function getRemainingScanTime() {
+    return Math.max(0, SCAN_MAX_DURATION_MS - (Date.now() - scanStartTime));
+  }
 
   const logDiagnostic = (operation, details = {}) => {
     const elapsed = Date.now() - scanStartTime;
@@ -593,79 +700,95 @@ async function executeTest(job) {
     console.log(`[FLIQ Scan Diag] [${new Date().toISOString()}] job=${job.id} owner=${job.owner} elapsed=${elapsed}ms remaining=${remaining}ms op="${operation}" ${JSON.stringify(details)}`);
   };
 
-  await acquireScanSlot();
-  logDiagnostic('acquired_scan_slot');
-
-  const scanStartTime = Date.now();
-  const SCAN_MAX_DURATION_MS = 90000;
-
-  function getRemainingScanTime() {
-    return Math.max(0, SCAN_MAX_DURATION_MS - (Date.now() - scanStartTime));
-  }
-
-  timeoutId = setTimeout(async () => {
-    if (isTerminal) return;
-    isTimedOut = true;
-    try {
-      if (browser) {
-        await browser.close().catch(() => {});
-        browser = null;
-      }
-    } catch {}
-    await safeRefundQuotaOnce();
-    let latestEntitlement = null;
-    try {
-      latestEntitlement = await getUserEntitlement(job.owner, { db: cloud(), localDataDir: dataDir });
-    } catch {}
-    await update({
-      status: 'timed_out',
-      progress: 0,
-      stage: 'Timed Out',
-      error: 'Test execution exceeded timeout limit (90s).',
-      completedAt: new Date().toISOString(),
-      issues: issues.length ? issues : [],
-      entitlement: latestEntitlement
-    });
-  }, SCAN_MAX_DURATION_MS);
-
   try {
+    logDiagnostic('job_accepted', { url: job.url });
+    const queueStartTime = Date.now();
+    try {
+      releaseSlot = await acquireScanSlot(job.id, 35000);
+    } catch (queueErr) {
+      logDiagnostic('queue_timeout', { error: queueErr.message });
+      await safeRefundQuotaOnce();
+      await update({
+        status: 'failed',
+        progress: 0,
+        stage: 'Failed',
+        error: 'Scan concurrency limit reached. The server was busy processing active tests. Your scan quota was refunded.',
+        completedAt: new Date().toISOString()
+      });
+      return;
+    }
+    timings.queueWaitMs = Date.now() - queueStartTime;
+    logDiagnostic('acquired_scan_slot', { queueWaitMs: timings.queueWaitMs });
+
+    timeoutId = setTimeout(async () => {
+      if (isTerminal) return;
+      isTimedOut = true;
+      logDiagnostic('scan_timeout_watchdog_fired');
+      try {
+        if (page && !page.isClosed()) {
+          await page.close().catch(() => {});
+        }
+        if (context) {
+          await context.close().catch(() => {});
+          context = null;
+        }
+      } catch {}
+      if (releaseSlot) {
+        releaseSlot();
+        releaseSlot = null;
+      }
+      await safeRefundQuotaOnce();
+      let latestEntitlement = null;
+      try {
+        latestEntitlement = await getUserEntitlement(job.owner, { db: cloud(), localDataDir: dataDir });
+      } catch {}
+      await update({
+        status: 'timed_out',
+        progress: 0,
+        stage: 'Timed Out',
+        error: `Test execution exceeded timeout limit (${SCAN_MAX_DURATION_MS / 1000}s).`,
+        completedAt: new Date().toISOString(),
+        issues: issues.length ? issues : [],
+        entitlement: latestEntitlement
+      });
+    }, SCAN_MAX_DURATION_MS);
+
     if (isTimedOut || isTerminal) return;
-    const { chromium } = await import('playwright');
     const { url } = await validateTarget(job.url);
     if (isTimedOut || isTerminal) return;
     await update({ status: 'running', progress: 10, stage: 'Initializing browser', currentUrl: job.url, issues: [] });
     logDiagnostic('launching_browser');
-    browser = await chromium.launch({
-      headless: true,
-      args: [
-        '--disable-dev-shm-usage',
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-gpu',
-        '--no-zygote',
-        '--no-first-run',
-        '--renderer-process-limit=1',
-        '--js-flags=--max-old-space-size=128',
-        '--disable-extensions',
-        '--disable-component-extensions-with-background-pages',
-        '--mute-audio',
-        '--disable-default-apps',
-        '--disable-background-networking',
-        '--disable-background-timer-throttling',
-        '--disable-backgrounding-occluded-windows',
-        '--disable-features=Translate,BackForwardCache,AcceptCHFrame,MediaRouter,OptimizationHints',
-        '--memory-pressure-off'
-      ]
-    });
-    logDiagnostic('browser_launched');
-    const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
-    logDiagnostic('page_created');
+    const bInitStart = Date.now();
+    browser = await withDeadline(getSharedBrowser(), 15000, null, 'browser launch');
+    if (!browser) {
+      throw new Error('Chromium browser could not be initialized within 15 seconds.');
+    }
+    context = await withDeadline(
+      browser.newContext({
+        viewport: { width: 1440, height: 960 },
+        deviceScaleFactor: 1,
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 FLIQ-Scanner/1.0'
+      }),
+      10000,
+      null,
+      'browser context creation'
+    );
+    if (!context) {
+      throw new Error('Browser context could not be created within 10 seconds.');
+    }
+    page = await withDeadline(context.newPage(), 10000, null, 'browser page creation');
+    if (!page) {
+      throw new Error('Browser page could not be created within 10 seconds.');
+    }
+    timings.browserInitMs = Date.now() - bInitStart;
+    logDiagnostic('page_created', { browserInitMs: timings.browserInitMs });
     const liveScreenshotFile = `${job.id}-live.jpeg`;
     const liveScreenshotPath = path.join(dataDir, liveScreenshotFile);
 
     async function captureLivePreview(quality = 70) {
       try {
         if (!page || page.isClosed()) return false;
+        const sStart = Date.now();
         await page.screenshot({
           path: liveScreenshotPath,
           type: 'jpeg',
@@ -673,6 +796,7 @@ async function executeTest(job) {
           fullPage: false,
           timeout: 2500
         });
+        timings.screenshotMs += (Date.now() - sStart);
         return true;
       } catch {
         return false;
@@ -855,10 +979,42 @@ async function executeTest(job) {
 
     const domContentLoadedTime = navMetrics?.domContentLoadedMs || (Date.now() - started);
     const loadTime = navMetrics?.windowLoadMs || Math.max(domContentLoadedTime, Date.now() - started);
+    timings.navMs = domContentLoadedTime;
+
+    const siteMetadata = await withDeadline(page.evaluate(() => {
+      try {
+        const title = document.title || '';
+        const iconEl = document.querySelector('link[rel~="icon"], link[rel*="icon"], link[rel="apple-touch-icon"]');
+        let favicon = iconEl ? iconEl.href : '';
+        if (!favicon) {
+          try { favicon = new URL('/favicon.ico', window.location.origin).href; } catch {}
+        }
+        const navAnchorElements = Array.from(document.querySelectorAll('header a[href], nav a[href], [role="navigation"] a[href], .nav a[href], .menu a[href], a[href]'));
+        const navLinks = [];
+        const seenUrls = new Set();
+        for (const a of navAnchorElements) {
+          try {
+            const rawHref = a.getAttribute('href');
+            if (!rawHref || rawHref.startsWith('#') || rawHref.startsWith('javascript:')) continue;
+            const u = new URL(a.href);
+            if (u.origin === window.location.origin && !seenUrls.has(u.pathname) && u.pathname !== '/') {
+              seenUrls.add(u.pathname);
+              const label = (a.textContent || '').trim().replace(/\s+/g, ' ');
+              if (label && label.length >= 2 && label.length <= 25) {
+                navLinks.push({ label, href: u.href, path: u.pathname });
+              }
+            }
+          } catch {}
+          if (navLinks.length >= 6) break;
+        }
+        return { title, favicon, navLinks };
+      } catch {
+        return { title: '', favicon: '', navLinks: [] };
+      }
+    }), 2500, { title: '', favicon: '', navLinks: [] }, 'site metadata extraction');
 
     // Reset scroll to top before live preview capture
-    await withDeadline(page.evaluate(() => window.scrollTo(0, 0)), 2000, null, 'window scroll reset');
-    await page.waitForTimeout(150);
+    await withDeadline(page.evaluate(() => window.scrollTo(0, 0)), 1500, null, 'window scroll reset');
 
     // Capture initial live preview screenshot
     await captureLivePreview(75);
@@ -869,7 +1025,10 @@ async function executeTest(job) {
       currentUrl: finalUrl,
       liveScreenshot: liveScreenshotFile,
       liveScreenshotTime: Date.now(),
-      httpStatus: response?.status() ?? null,
+      pageTitle: siteMetadata.title || title,
+      favicon: siteMetadata.favicon,
+      navLinks: siteMetadata.navLinks,
+      httpStatus: response?.status() ?? 200,
       issues: [...issues]
     });
 
@@ -1342,14 +1501,18 @@ async function executeTest(job) {
       try { await fs.copyFile(desktop, mobile); } catch {}
     }
 
-    // Immediately close Chromium browser to release ~300MB RAM before report aggregation & scoring
+    // Immediately close Chromium context to release page RAM before report aggregation & scoring
     try {
-      if (browser) {
-        await browser.close();
-        browser = null;
+      if (page && !page.isClosed()) {
+        await page.close().catch(() => {});
+        page = null;
+      }
+      if (context) {
+        await context.close().catch(() => {});
+        context = null;
       }
     } catch (bCloseErr) {
-      console.warn('[FLIQ] Browser close warning:', bCloseErr.message);
+      console.warn('[FLIQ] Context close warning:', bCloseErr.message);
     }
 
     // Quality Analysis & Explanations (Deterministic quality engine)
@@ -1428,8 +1591,18 @@ async function executeTest(job) {
       completedAt: new Date().toISOString(),
       finalUrl,
       title,
+      pageTitle: siteMetadata?.title || title,
+      favicon: siteMetadata?.favicon || '',
+      navLinks: siteMetadata?.navLinks || [],
       httpStatus: response?.status() ?? null,
       loadTime,
+      timings: {
+        queueWaitMs: timings.queueWaitMs,
+        browserInitMs: timings.browserInitMs,
+        navMs: timings.navMs,
+        screenshotMs: timings.screenshotMs,
+        totalScanDurationMs: Date.now() - scanStartTime
+      },
       issues: groupedIssues,
       rawIssues: finalIssues,
       score,
@@ -1504,11 +1677,21 @@ async function executeTest(job) {
       clearTimeout(timeoutId);
       timeoutId = null;
     }
-    if (browser) {
-      await browser.close().catch(() => {});
-      browser = null;
+    if (page && !page.isClosed()) {
+      await page.close().catch(() => {});
+      page = null;
     }
-    releaseScanSlot();
+    if (context) {
+      await context.close().catch(() => {});
+      context = null;
+    }
+    if (releaseSlot) {
+      releaseSlot();
+      releaseSlot = null;
+    } else {
+      releaseScanSlot(job.id);
+    }
+    logDiagnostic('slot_released');
   }
 }
 
@@ -1617,6 +1800,7 @@ const server=http.createServer(async(req,res)=>{
       return send(res, 200, {
         ok: true,
         playwrightConfigured: playwrightAvailable,
+        queue: getQueueStatus(),
         firestoreModuleAvailable,
         firestoreConfigured,
         firestoreConnected,
@@ -1867,7 +2051,7 @@ const server=http.createServer(async(req,res)=>{
         const user=await verifiedUser(req);
         const {url, isPriority}=JSON.parse(body); 
         const valid=await validateTarget(url); 
-        const jobs=await reconcileStaleJobs(180000);
+        const jobs=await reconcileStaleJobs(80000);
         const ownerId = user.uid;
         const active=jobs.filter(j=>j.owner===ownerId&&(j.status==='running'||j.status==='queued')).length;
         if(active>=Number(process.env.FLIQ_MAX_ACTIVE_TESTS||1))return send(res,429,{error:'You already have an active test. Wait for it to finish before starting another.'});
@@ -1959,31 +2143,29 @@ const server=http.createServer(async(req,res)=>{
       const pngFile = path.join(dataDir, `${testId}-live.png`);
       const desktopFile = path.join(dataDir, `${testId}-desktop.png`);
 
+      const corsOrigin = origin && isOriginAllowed(origin) ? origin : '*';
+      const imgHeaders = {
+        'cache-control': 'no-cache, no-store, must-revalidate',
+        'access-control-allow-origin': corsOrigin
+      };
+      if (corsOrigin !== '*') {
+        imgHeaders['access-control-allow-credentials'] = 'true';
+        imgHeaders['vary'] = 'Origin';
+      }
+
       try {
         const b = await fs.readFile(jpegFile);
-        res.writeHead(200, {
-          'content-type': 'image/jpeg',
-          'cache-control': 'no-cache, no-store, must-revalidate',
-          'access-control-allow-origin': origin && isOriginAllowed(origin) ? origin : '*'
-        });
+        res.writeHead(200, { ...imgHeaders, 'content-type': 'image/jpeg' });
         return res.end(b);
       } catch {
         try {
           const b = await fs.readFile(pngFile);
-          res.writeHead(200, {
-            'content-type': 'image/png',
-            'cache-control': 'no-cache, no-store, must-revalidate',
-            'access-control-allow-origin': origin && isOriginAllowed(origin) ? origin : '*'
-          });
+          res.writeHead(200, { ...imgHeaders, 'content-type': 'image/png' });
           return res.end(b);
         } catch {
           try {
             const b = await fs.readFile(desktopFile);
-            res.writeHead(200, {
-              'content-type': 'image/png',
-              'cache-control': 'no-cache, no-store, must-revalidate',
-              'access-control-allow-origin': origin && isOriginAllowed(origin) ? origin : '*'
-            });
+            res.writeHead(200, { ...imgHeaders, 'content-type': 'image/png' });
             return res.end(b);
           } catch {
             return send(res, 404, { error: 'Live screenshot not ready.' });
@@ -2115,6 +2297,27 @@ const server=http.createServer(async(req,res)=>{
         }
         if(!j) j=(await readDB()).find(x=>x.id===m[1]);
         if(!j) return send(res,404,{error:'Test not found.'});
+
+        // Stale scan reconciliation on GET: If scan is queued or running and has exceeded 80s without update, reconcile it immediately
+        if (j.status === 'queued' || j.status === 'running') {
+          const age = Date.now() - Date.parse(j.createdAt || 0);
+          if (age > 80000) {
+            j.status = 'timed_out';
+            j.stage = 'Timed Out';
+            j.progress = 0;
+            j.error = 'Scan exceeded timeout threshold (80s). Quota was refunded.';
+            j.completedAt = new Date().toISOString();
+            if (j.owner) {
+              try { await refundScanUsage(j.owner, { db: cloud(), localDataDir: dataDir }); } catch {}
+            }
+            const localDb = await readDB();
+            const at = localDb.findIndex(x => x.id === j.id);
+            if (at >= 0) { Object.assign(localDb[at], j); await saveDB(localDb); }
+            if (adminApp && cloud() && j.owner !== 'local') {
+              try { await cloud().collection('tests').doc(j.id).set(sanitizeReportForPersistence(j), { merge: true }); } catch {}
+            }
+          }
+        }
 
         const isOwner = user.uid === j.owner;
         const isShared = (j.sharedWithUids||[]).includes(user.uid);

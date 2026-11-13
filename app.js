@@ -1,4 +1,4 @@
-const $=s=>document.querySelector(s), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+npm run test:queueconst $=s=>document.querySelector(s), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let path=location.pathname, modal=false, period='Monthly', activeTab='Issues', issueFilter='all', testTimer, shareModalId=null, shareRecipients=[], shareMessage='';
 let upgradeModalData = null;
 let selectedPricingPlan = 'Creator';
@@ -2022,6 +2022,45 @@ function newTest(){
 let liveActiveCategory = 'all';
 let liveActiveClassification = 'all';
 let liveSelectedFindingId = null;
+let livePreviewViewportMode = 'desktop';
+let livePreviewBlobUrl = null;
+let isFetchingLivePreview = false;
+
+async function loadLivePreviewImage(testId) {
+  if (!testId || isFetchingLivePreview) return;
+  const imgEl = document.querySelector('#live-preview-img');
+  const box = document.querySelector('#live-preview-box');
+  isFetchingLivePreview = true;
+  try {
+    const res = await apiFetch(`/api/tests/${testId}/live-screenshot?ts=${Date.now()}`);
+    if (res.ok) {
+      const blob = await res.blob();
+      if (blob && blob.size > 0) {
+        const newUrl = URL.createObjectURL(blob);
+        if (imgEl) {
+          imgEl.src = newUrl;
+          imgEl.style.opacity = '1';
+        }
+        if (livePreviewBlobUrl) {
+          try { URL.revokeObjectURL(livePreviewBlobUrl); } catch {}
+        }
+        livePreviewBlobUrl = newUrl;
+        if (box) {
+          box.classList.remove('is-loading');
+          box.classList.add('has-screenshot');
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[FLIQ Live Preview] Failed to load preview frame:', err.message);
+  } finally {
+    isFetchingLivePreview = false;
+  }
+}
+
+function loadLivePreview(testId) {
+  loadLivePreviewImage(testId);
+}
 
 const CANONICAL_LIVE_STAGES = [
   { id: 1, name: 'Initializing browser', p: 10, desc: 'Launching isolated Chromium browser session' },
@@ -2135,7 +2174,7 @@ async function progressPage(id, preloaded = null) {
     }
   }
 
-  return appShell(`
+  const pageHtml = appShell(`
     <div class="live-inspection-shell">
       <div class="live-top-bar">
         <div class="live-top-row">
@@ -2174,17 +2213,30 @@ async function progressPage(id, preloaded = null) {
         <div class="live-preview-panel">
           <div class="live-browser-chrome">
             <div class="live-browser-dots"><span></span><span></span><span></span></div>
-            <div class="live-address-bar" title="${esc(t.currentUrl || t.finalUrl || t.url)}">🔒 ${esc(t.currentUrl || t.finalUrl || t.url)}</div>
-            <span class="live-preview-badge"><span class="live-pulse-dot" style="width:6px;height:6px"></span>Live Render</span>
-            <span class="live-browser-viewport">1440 × 960 Desktop Chromium</span>
+            <div class="live-address-bar" title="${esc(t.pageTitle ? `${t.pageTitle} — ${t.currentUrl || t.finalUrl || t.url}` : (t.currentUrl || t.finalUrl || t.url))}">
+              ${t.favicon ? `<img src="${esc(t.favicon)}" alt="" style="width:13px;height:13px;border-radius:2px;vertical-align:middle;margin-right:6px" onerror="this.remove()">` : '🔒 '}
+              <span>${esc(t.pageTitle ? `${t.pageTitle} · ${t.currentUrl || t.finalUrl || t.url}` : (t.currentUrl || t.finalUrl || t.url))}</span>
+            </div>
+            <div class="live-viewport-switch" role="group" aria-label="Viewport Switcher">
+              <button class="live-viewport-btn ${livePreviewViewportMode === 'desktop' ? 'active' : ''}" data-action="switch-viewport" data-viewport="desktop" title="Desktop 1440 × 960">🖥 1440px</button>
+              <button class="live-viewport-btn ${livePreviewViewportMode === 'tablet' ? 'active' : ''}" data-action="switch-viewport" data-viewport="tablet" title="Tablet 768 × 1024">📱 768px</button>
+              <button class="live-viewport-btn ${livePreviewViewportMode === 'mobile' ? 'active' : ''}" data-action="switch-viewport" data-viewport="mobile" title="Mobile 390 × 844">📱 390px</button>
+            </div>
             <button class="btn outline" style="padding:2px 8px;font-size:10px;min-height:24px;border-radius:3px" data-action="refresh-preview" title="Refresh live preview frame">↺</button>
           </div>
 
-          <div class="live-preview-container" id="live-preview-box">
+          ${(Array.isArray(t.navLinks) && t.navLinks.length > 0) ? `
+            <div class="live-nav-strip">
+              <span class="live-nav-strip-label">🧭 Navigation Links:</span>
+              ${t.navLinks.map(l => `<span class="live-nav-chip" title="${esc(l.href)}">${esc(l.label)}</span>`).join('')}
+            </div>
+          ` : ''}
+
+          <div class="live-preview-container mode-${livePreviewViewportMode || 'desktop'}" id="live-preview-box">
             ${t.liveScreenshot ? `
               <div class="live-preview-scroll-frame">
                 <div class="live-preview-canvas">
-                  <img id="live-preview-img" class="live-preview-img" data-live-screenshot="/api/tests/${esc(id)}/live-screenshot" alt="Live Playwright Browser View of ${esc(t.url)}" onerror="this.onerror=null;this.parentElement.innerHTML='<div class=\\'live-preview-fallback\\'><div class=\\'fallback-icon\\'>🌐</div><h4>Live Preview Frame Failed to Load</h4><p>Could not load the screenshot frame from the backend. The scan is still actively running.</p><button class=\\'btn outline\\' style=\\'padding:4px 10px;font-size:11px\\' data-action=\\'refresh-preview\\'>Retry ↺</button></div>';">
+                  <img id="live-preview-img" class="live-preview-img" src="${livePreviewBlobUrl || ''}" data-live-screenshot="/api/tests/${esc(id)}/live-screenshot" alt="Live Playwright Browser View of ${esc(t.url)}" onerror="this.onerror=null; loadLivePreviewImage('${esc(id)}');">
                   ${highlightHtml}
                 </div>
               </div>
@@ -2192,13 +2244,20 @@ async function progressPage(id, preloaded = null) {
               <div class="live-preview-loading">
                 <div class="spinner"></div>
                 <h4>Preparing Live Browser View</h4>
-                <p>Playwright Chromium is launching and navigating to <code>${esc(t.currentUrl || t.finalUrl || t.url)}</code>...</p>
+                <p>Playwright Chromium is navigating to <code>${esc(t.currentUrl || t.finalUrl || t.url)}</code>...</p>
                 <div class="live-loading-stages">
                   <div class="live-loading-chip done">✓ Launch isolated headless Chromium</div>
                   <div class="live-loading-chip ${(t.progress || 10) >= 20 ? 'done' : 'active'}">${(t.progress || 10) >= 20 ? '✓' : '⚡'} Initialize viewport (1440 × 960) & network listener</div>
                   <div class="live-loading-chip ${(t.progress || 10) >= 28 ? 'done' : (t.progress || 10) >= 20 ? 'active' : 'pending'}">${(t.progress || 10) >= 28 ? '✓' : '○'} DOMContentLoaded & initial visual paint</div>
                   <div class="live-loading-chip ${(t.progress || 10) >= 48 ? 'active' : 'pending'}">○ Progressive audit updates & DOM captures</div>
                 </div>
+                ${(t.createdAt && (Date.now() - Date.parse(t.createdAt) > 35000) && (t.progress || 10) <= 10) ? `
+                  <div style="margin-top:14px;padding:10px 14px;background:#fff8e6;border:1px solid #f0d080;border-radius:6px;font-size:12px;color:#7a5500;text-align:center">
+                    <div>⏳ <b>Initialization is taking longer than expected.</b></div>
+                    <p style="margin:4px 0 8px;font-size:11px;color:#8a6508">The cloud browser may be starting up or the worker queue is busy.</p>
+                    <button class="btn black" style="padding:3px 10px;font-size:11px" data-action="retry-test-url" data-url="${esc(t.url)}">Restart scan ↺</button>
+                  </div>
+                ` : ''}
               </div>
             `}
           </div>
@@ -2333,6 +2392,10 @@ async function progressPage(id, preloaded = null) {
       </div>
     </div>
   `);
+  if (t.liveScreenshot) {
+    setTimeout(() => loadLivePreviewImage(id), 10);
+  }
+  return pageHtml;
 }
 function renderCheckStatusBadge(status) {
   switch (status) {
@@ -2862,7 +2925,7 @@ async function resultPage(id, preloaded = null){
     activeTab = 'Issues';
   }
 
-  return appShell(`
+  const pageHtml = appShell(`
     <div class="report-head">
       <div>
         <a href="/dashboard" data-route>← Back to dashboard</a>
@@ -3936,7 +3999,7 @@ function render(){
     else if(path==='/dashboard/settings') out=settings();
     else if(['/dashboard/history','/dashboard/reports','/dashboard/monitors','/dashboard/team'].includes(path)) out=historyPage(({ '/dashboard/history':'Test History','/dashboard/reports':'Reports','/dashboard/monitors':'Monitors','/dashboard/team':'Team'}[path]));
     else if(parts[0]==='dashboard'&&parts[1]==='tests'&&parts[3]==='issues') out=issuePage(parts[2],parts[4]);
-    else if(parts[0]==='dashboard'&&parts[1]==='tests') out=resultPage(parts[2]);
+    else if(parts[0]==='dashboard'&&parts[1]==='tests') out=resultPage(parts[2], window.__fliqActiveTestCache?.get(parts[2]));
     else if(path==='/docs') out=docs();
     else if(path==='/blog') out=blog();
     else if(path==='/demo') out=demo();
@@ -4202,8 +4265,14 @@ function subscribeLiveScan(id) {
         }
         try {
           const data = JSON.parse(e.data);
+          window.__fliqActiveTestCache = window.__fliqActiveTestCache || new Map();
+          window.__fliqActiveTestCache.set(id, data);
+          if (data.liveScreenshotTime) {
+            loadLivePreviewImage(id);
+          }
           if (data.status === 'completed' || data.status === 'failed' || data.status === 'timed_out') {
             clearActiveScanState();
+            window.__fliqActiveTestCache.delete(id);
             if (data.entitlement) {
               applyAuthoritativeEntitlement(data.entitlement, true);
             } else {
@@ -4230,17 +4299,20 @@ function subscribeLiveScan(id) {
 
 function startPollingFallback(id) {
   clearInterval(testTimer);
+  let pollAttempts = 0;
   testTimer = setInterval(async () => {
     if (!location.pathname.includes(`/tests/${id}`)) {
       clearInterval(testTimer);
       return;
     }
+    pollAttempts++;
     try {
       const r = await apiFetch(`/api/tests/${id}`);
       if (r.ok) {
         const t = await r.json();
         if (t.status === 'completed' || t.status === 'failed' || t.status === 'timed_out') {
           clearActiveScanState();
+          window.__fliqActiveTestCache?.delete(id);
           clearInterval(testTimer);
           if (t.entitlement) {
             applyAuthoritativeEntitlement(t.entitlement, true);
@@ -4248,12 +4320,23 @@ function startPollingFallback(id) {
             fetchUserEntitlement(true).catch(() => {});
           }
         } else {
+          window.__fliqActiveTestCache = window.__fliqActiveTestCache || new Map();
+          window.__fliqActiveTestCache.set(id, t);
           setActiveScanState(t.id, t.url, t.stage, t.progress, t.status);
+          if (t.liveScreenshotTime) {
+            loadLivePreviewImage(id);
+          }
         }
         render();
+      } else if (r.status === 404) {
+        clearInterval(testTimer);
       }
     } catch (e) {
       console.warn('[FLIQ] Poll error:', e.message);
+    }
+    if (pollAttempts >= 60) {
+      clearInterval(testTimer);
+      render();
     }
   }, 1500);
 }
@@ -4456,6 +4539,19 @@ document.addEventListener('click',async e=>{
     if(action==='start-checkout'){
       e.preventDefault();
       await handleCheckoutButtonClick(a);
+      return;
+    }
+    if(action==='switch-viewport'){
+      e.preventDefault();
+      livePreviewViewportMode = a.dataset.viewport || 'desktop';
+      const box = document.querySelector('#live-preview-box');
+      if (box) {
+        box.classList.remove('mode-desktop', 'mode-tablet', 'mode-mobile');
+        box.classList.add(`mode-${livePreviewViewportMode}`);
+      }
+      document.querySelectorAll('[data-action="switch-viewport"]').forEach(b => {
+        b.classList.toggle('active', b.dataset.viewport === livePreviewViewportMode);
+      });
       return;
     }
     if(action==='refresh-preview'){
